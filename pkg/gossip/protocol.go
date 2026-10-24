@@ -17,27 +17,31 @@ import (
 
 // GossipMessage is exchanged during epidemic routing rounds.
 type GossipMessage struct {
-	SenderID    string   `json:"sender_id"`
-	MerkleRoot  string   `json:"merkle_root"`
-	TotalChunks int64    `json:"total_chunks"`
-	StoredBytes int64    `json:"stored_bytes"`
-	PeerList    []string `json:"peer_list"`
-	Timestamp   int64    `json:"timestamp"`
+	SenderID       string   `json:"sender_id"`
+	SenderName     string   `json:"sender_name"`
+	SenderHTTPAddr string   `json:"sender_http_addr"`
+	MerkleRoot     string   `json:"merkle_root"`
+	TotalChunks    int64    `json:"total_chunks"`
+	StoredBytes    int64    `json:"stored_bytes"`
+	PeerList       []string `json:"peer_list"`
+	Timestamp      int64    `json:"timestamp"`
 }
 
 // GossipEngine orchestrates peer state dissemination and anti-entropy synchronization.
 type GossipEngine struct {
-	nodeID       string
-	routingTable *RoutingTable
-	casStore     *storage.ContentAddressableStore
-	interval     time.Duration
-	fanout       int
-	httpClient   *http.Client
-	eventChan    chan ClusterEvent
-	ctx          context.Context
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
-	mu           sync.RWMutex
+	nodeID         string
+	senderName     string
+	senderHTTPAddr string
+	routingTable   *RoutingTable
+	casStore       *storage.ContentAddressableStore
+	interval       time.Duration
+	fanout         int
+	httpClient     *http.Client
+	eventChan      chan ClusterEvent
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	mu             sync.RWMutex
 }
 
 // NewGossipEngine creates a new Gossip Protocol instance.
@@ -63,6 +67,62 @@ func NewGossipEngine(
 		ctx:       ctx,
 		cancel:    cancel,
 	}
+}
+
+// SetLocalDetails configures the local name and address advertised in gossip exchanges.
+func (g *GossipEngine) SetLocalDetails(name, addr string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.senderName = name
+	g.senderHTTPAddr = addr
+}
+
+// ConnectPeer dials a peer directly by IP:Port and registers it into the cluster mesh.
+func (g *GossipEngine) ConnectPeer(addr string) error {
+	addr = strings.TrimSpace(addr)
+	if !strings.Contains(addr, ":") {
+		addr += ":8080"
+	}
+
+	endpoint := fmt.Sprintf("http://%s/api/status", addr)
+	req, err := http.NewRequestWithContext(g.ctx, "GET", endpoint, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := g.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to contact peer at %s: %w", addr, err)
+	}
+	defer resp.Body.Close()
+
+	var status struct {
+		NodeID     string            `json:"node_id"`
+		NodeName   string            `json:"node_name"`
+		MerkleRoot string            `json:"merkle_root"`
+		CASStats   storage.CASStats  `json:"cas_stats"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return fmt.Errorf("invalid response from peer %s: %w", addr, err)
+	}
+
+	if status.NodeID == g.nodeID {
+		return fmt.Errorf("cannot connect to self")
+	}
+
+	peer := PeerNode{
+		ID:          status.NodeID,
+		Name:        status.NodeName,
+		HTTPAddr:    addr,
+		MerkleRoot:  status.MerkleRoot,
+		TotalChunks: status.CASStats.TotalChunks,
+		StoredBytes: status.CASStats.StoredBytes,
+		Status:      StatusActive,
+		LastSeen:    time.Now(),
+	}
+	g.routingTable.Upsert(peer)
+	log.Printf("[GOSSIP] Connected directly to peer %s (%s)", peer.Name, peer.HTTPAddr)
+	return nil
 }
 
 // Start initiates periodic gossip rounds and background stale peer sweeps.
@@ -127,11 +187,13 @@ func (g *GossipEngine) executeRound() {
 	stats := g.casStore.Stats()
 
 	msg := GossipMessage{
-		SenderID:    g.nodeID,
-		MerkleRoot:  localTree.RootHash(),
-		TotalChunks: stats.TotalChunks,
-		StoredBytes: stats.StoredBytes,
-		Timestamp:   time.Now().Unix(),
+		SenderID:       g.nodeID,
+		SenderName:     g.senderName,
+		SenderHTTPAddr: g.senderHTTPAddr,
+		MerkleRoot:     localTree.RootHash(),
+		TotalChunks:    stats.TotalChunks,
+		StoredBytes:    stats.StoredBytes,
+		Timestamp:      time.Now().Unix(),
 	}
 
 	for i := 0; i < count; i++ {

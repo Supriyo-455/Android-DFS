@@ -64,6 +64,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/nodes", s.handleNodes)
 	mux.HandleFunc("/api/nodes/sync", s.handleForceSync)
+	mux.HandleFunc("/api/peers/add", s.handlePeerAdd)
 	mux.HandleFunc("/api/gossip", s.handleGossip)
 	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.HandleFunc("/api/files", s.handleFiles)
@@ -142,6 +143,32 @@ func (s *Server) handleForceSync(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handlePeerAdd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var payload struct {
+		Addr string `json:"addr"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.gossipEngine.ConnectPeer(payload.Addr); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"message": fmt.Sprintf("Connected to peer at %s", payload.Addr),
+	})
+}
+
 func (s *Server) handleGossip(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -154,11 +181,25 @@ func (s *Server) handleGossip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	peerAddr := msg.SenderHTTPAddr
+	if peerAddr == "" {
+		host := r.RemoteAddr
+		if colon := strings.LastIndex(host, ":"); colon != -1 {
+			host = host[:colon]
+		}
+		peerAddr = host + ":8080"
+	}
+
+	peerName := msg.SenderName
+	if peerName == "" {
+		peerName = msg.SenderID
+	}
+
 	// Register or update peer
 	s.routingTable.Upsert(gossip.PeerNode{
 		ID:          msg.SenderID,
-		Name:        msg.SenderID,
-		HTTPAddr:    r.RemoteAddr,
+		Name:        peerName,
+		HTTPAddr:    peerAddr,
 		MerkleRoot:  msg.MerkleRoot,
 		TotalChunks: msg.TotalChunks,
 		StoredBytes: msg.StoredBytes,

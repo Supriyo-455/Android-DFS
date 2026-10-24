@@ -514,7 +514,16 @@
               </svg>
               Cluster Mesh Nodes
             </div>
-            <button class="btn btn-secondary btn-sm" id="btn-refresh-nodes">Refresh Mesh</button>
+            <div style="display:flex; gap:8px;">
+              <button class="btn btn-sm" id="btn-add-peer-ip">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+                Connect Peer IP
+              </button>
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-nodes">Refresh Mesh</button>
+            </div>
           </div>
           <div class="card-body" style="padding:0;">
             <table class="data-table">
@@ -707,6 +716,27 @@
         document.getElementById('btn-refresh-nodes').addEventListener('click', () => {
           this.loadStatus();
           this.loadPeers();
+        });
+        document.getElementById('btn-add-peer-ip').addEventListener('click', async () => {
+          const addr = prompt("Enter peer phone IP address and port (e.g. 192.168.0.115:8080):");
+          if (!addr) return;
+          try {
+            const res = await fetch('/api/peers/add', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ addr: addr.trim() })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              this.showToast(data.message || "Connected to peer!");
+              this.loadPeers();
+              this.loadStatus();
+            } else {
+              this.showToast("Failed to connect: " + (data.message || res.statusText));
+            }
+          } catch (e) {
+            this.showToast("Connection error: " + e.message);
+          }
         });
         document.getElementById('btn-refresh-files').addEventListener('click', () => this.loadFiles());
         document.getElementById('btn-ingest').addEventListener('click', () => this.executeIngest());

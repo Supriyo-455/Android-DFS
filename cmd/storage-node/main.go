@@ -37,6 +37,9 @@ func main() {
 	flag.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "Directory path for CAS chunks and metadata")
 	flag.BoolVar(&cfg.AndroidMode, "android", cfg.AndroidMode, "Force Android/Termux execution environment mode")
 	flag.BoolVar(&cfg.WakeLockEnabled, "wakelock", cfg.WakeLockEnabled, "Acquire PARTIAL_WAKE_LOCK to prevent CPU sleep")
+	var seedPeers string
+	flag.StringVar(&seedPeers, "peer", "", "Optional peer address to connect to on startup (e.g. 192.168.0.110:8080)")
+	flag.StringVar(&seedPeers, "peers", "", "Optional comma-separated peer addresses to connect to on startup")
 	flag.IntVar(&cfg.CDCAvgSize, "cdc-avg-size", cfg.CDCAvgSize, "FastCDC target chunk size in bytes")
 	flag.Parse()
 
@@ -94,14 +97,36 @@ func main() {
 	}()
 
 	// Step 5: Gossip Engine (Epidemic Routing & Anti-Entropy Reconciliation)
+	portStr := cfg.HTTPAddr
+	if strings.HasPrefix(portStr, ":") {
+		portStr = portStr[1:]
+	}
+	localAddr := fmt.Sprintf("%s:%s", getLocalIP(), portStr)
+
 	gossipEngine := gossip.NewGossipEngine(cfg.NodeID, routingTable, casStore, cfg.GossipInterval, eventChannel)
+	gossipEngine.SetLocalDetails(cfg.NodeName, localAddr)
 	gossipEngine.Start()
+
+	// If seed peers were provided, connect to them
+	if seedPeers != "" {
+		go func() {
+			time.Sleep(1 * time.Second)
+			for _, peerAddr := range strings.Split(seedPeers, ",") {
+				peerAddr = strings.TrimSpace(peerAddr)
+				if peerAddr != "" {
+					if err := gossipEngine.ConnectPeer(peerAddr); err != nil {
+						log.Printf("[PEER] Initial connection to %s: %v", peerAddr, err)
+					}
+				}
+			}
+		}()
+	}
 
 	// Step 6: UDP Multicast Peer Discovery (with SO_REUSEADDR & SO_REUSEPORT)
 	announcement := discovery.PeerAnnouncement{
 		NodeID:      cfg.NodeID,
 		NodeName:    cfg.NodeName,
-		HTTPAddr:    cfg.HTTPAddr,
+		HTTPAddr:    localAddr,
 		GossipPort:  cfg.GossipPort,
 		MerkleRoot:  initialTree.RootHash(),
 		TotalChunks: casStore.Stats().TotalChunks,
