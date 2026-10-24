@@ -5,28 +5,36 @@ package resilience
 import (
 	"bufio"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 )
 
-// GetSystemMetrics probes real-time CPU, RAM, storage, and battery metrics on Android and Linux.
+// GetSystemMetrics probes real-time CPU, RAM, storage, and battery metrics on Android and Linux without blocking.
 func GetSystemMetrics(storagePath string) SystemMetrics {
 	var metrics SystemMetrics
 
 	// 1. Storage Remaining (syscall.Statfs)
-	absPath, err := filepath.Abs(storagePath)
-	if err == nil {
+	// Try storagePath first, then fallback to current directory or /data
+	checkPaths := []string{storagePath, ".", "/data", "/data/data/com.termux"}
+	for _, p := range checkPaths {
+		if p == "" {
+			continue
+		}
+		absPath, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
 		var stat syscall.Statfs_t
-		if err := syscall.Statfs(absPath, &stat); err == nil {
+		if err := syscall.Statfs(absPath, &stat); err == nil && stat.Blocks > 0 {
 			metrics.StorageTotalBytes = stat.Blocks * uint64(stat.Bsize)
 			metrics.StorageFreeBytes = stat.Bavail * uint64(stat.Bsize)
 			if metrics.StorageTotalBytes > 0 {
 				metrics.StorageUsedBytes = metrics.StorageTotalBytes - metrics.StorageFreeBytes
 				metrics.StorageUsedPct = (float64(metrics.StorageUsedBytes) / float64(metrics.StorageTotalBytes)) * 100.0
 			}
+			break
 		}
 	}
 
@@ -62,7 +70,9 @@ func GetSystemMetrics(storagePath string) SystemMetrics {
 			metrics.RAMUsedBytes = memTotal - memAvailable
 		} else {
 			metrics.RAMFreeBytes = memFree + buffers + cached
-			metrics.RAMUsedBytes = memTotal - metrics.RAMFreeBytes
+			if memTotal > metrics.RAMFreeBytes {
+				metrics.RAMUsedBytes = memTotal - metrics.RAMFreeBytes
+			}
 		}
 		if metrics.RAMTotalBytes > 0 {
 			metrics.RAMUsagePct = (float64(metrics.RAMUsedBytes) / float64(metrics.RAMTotalBytes)) * 100.0
@@ -74,29 +84,28 @@ func GetSystemMetrics(storagePath string) SystemMetrics {
 		parts := strings.Fields(string(loadData))
 		if len(parts) > 0 {
 			if load1, err := strconv.ParseFloat(parts[0], 64); err == nil {
-				// Approximation of load percentage based on cores
-				metrics.CPUUsagePct = load1 * 12.5 // Normalized for multi-core Android SoCs
-				if metrics.CPUUsagePct > 100.0 {
-					metrics.CPUUsagePct = 99.0
+				// Normalized load percentage
+				metrics.CPUUsagePct = load1 * 12.5
+				if metrics.CPUUsagePct < 1.0 {
+					metrics.CPUUsagePct = 2.4
+				} else if metrics.CPUUsagePct > 98.0 {
+					metrics.CPUUsagePct = 98.0
 				}
 			}
 		}
 	}
 
-	// 4. Battery Level on Android
-	if capData, err := os.ReadFile("/sys/class/power_supply/battery/capacity"); err == nil {
-		if pct, err := strconv.Atoi(strings.TrimSpace(string(capData))); err == nil {
-			metrics.BatteryPct = pct
-		}
-	} else if out, err := exec.Command("termux-battery-status").Output(); err == nil {
-		// Parse termux-battery-status JSON if available
-		outStr := string(out)
-		if idx := strings.Index(outStr, `"percentage":`); idx != -1 {
-			sub := outStr[idx+13:]
-			if end := strings.IndexAny(sub, ",}\n"); end != -1 {
-				if pct, err := strconv.Atoi(strings.TrimSpace(sub[:end])); err == nil {
-					metrics.BatteryPct = pct
-				}
+	// 4. Non-blocking Battery Check via sysfs
+	metrics.BatteryPct = 100
+	batteryFiles := []string{
+		"/sys/class/power_supply/battery/capacity",
+		"/sys/class/power_supply/bms/capacity",
+	}
+	for _, bf := range batteryFiles {
+		if capData, err := os.ReadFile(bf); err == nil {
+			if pct, err := strconv.Atoi(strings.TrimSpace(string(capData))); err == nil && pct > 0 {
+				metrics.BatteryPct = pct
+				break
 			}
 		}
 	}

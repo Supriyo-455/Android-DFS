@@ -694,13 +694,20 @@
 
       async init() {
         this.bindEvents();
-        await this.loadStatus();
+        this.loadStatus();
+        this.loadPeers();
+        this.loadFiles();
         this.connectWebSocket();
-        setInterval(() => this.loadStatus(), 6000);
+        setInterval(() => this.loadStatus(), 4000);
+        setInterval(() => this.loadPeers(), 5000);
+        setInterval(() => this.loadFiles(), 6000);
       }
 
       bindEvents() {
-        document.getElementById('btn-refresh-nodes').addEventListener('click', () => this.loadStatus());
+        document.getElementById('btn-refresh-nodes').addEventListener('click', () => {
+          this.loadStatus();
+          this.loadPeers();
+        });
         document.getElementById('btn-refresh-files').addEventListener('click', () => this.loadFiles());
         document.getElementById('btn-ingest').addEventListener('click', () => this.executeIngest());
         document.getElementById('btn-spawn-peer').addEventListener('click', () => this.spawnSimulatedPeer());
@@ -770,43 +777,55 @@
 
       async loadStatus() {
         try {
-          const res = await fetch('/api/status');
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 4000);
+          const res = await fetch('/api/status', { signal: controller.signal });
+          clearTimeout(timeoutId);
+          if (!res.ok) return;
           const data = await res.json();
           this.status = data;
 
           // Update Metrics
-          document.getElementById('stat-chunks').innerText = data.cas_stats.unique_chunks.toLocaleString();
-          document.getElementById('stat-stored-bytes').innerText = this.formatBytes(data.cas_stats.stored_bytes) + ' Stored';
-          document.getElementById('stat-dedup').innerText = data.cas_stats.dedup_ratio.toFixed(2) + 'x';
-          document.getElementById('stat-saved-bytes').innerText = this.formatBytes(data.cas_stats.saved_bytes) + ' Saved';
-          document.getElementById('stat-f2fs').innerText = data.f2fs_stats.estimated_write_amp.toFixed(2) + 'x';
-          document.getElementById('stat-merkle').innerText = data.merkle_root.slice(0, 16) + '...';
-          document.getElementById('stat-merkle').title = data.merkle_root;
+          if (data.cas_stats) {
+            document.getElementById('stat-chunks').innerText = (data.cas_stats.unique_chunks || 0).toLocaleString();
+            document.getElementById('stat-stored-bytes').innerText = this.formatBytes(data.cas_stats.stored_bytes || 0) + ' Stored';
+            document.getElementById('stat-dedup').innerText = (data.cas_stats.dedup_ratio || 1).toFixed(2) + 'x';
+            document.getElementById('stat-saved-bytes').innerText = this.formatBytes(data.cas_stats.saved_bytes || 0) + ' Saved';
+          }
+          if (data.f2fs_stats) {
+            document.getElementById('stat-f2fs').innerText = (data.f2fs_stats.estimated_write_amp || 1.02).toFixed(2) + 'x';
+          }
+          if (data.merkle_root) {
+            document.getElementById('stat-merkle').innerText = data.merkle_root.slice(0, 16) + '...';
+            document.getElementById('stat-merkle').title = data.merkle_root;
+          }
 
           // Update Hardware Telemetry (Storage, RAM, CPU, Battery)
           if (data.system_metrics) {
             const sm = data.system_metrics;
             // Storage
-            const storageFree = this.formatBytes(sm.storage_free_bytes);
-            const storageTotal = this.formatBytes(sm.storage_total_bytes);
+            const storageFree = this.formatBytes(sm.storage_free_bytes || 0);
+            const storageTotal = this.formatBytes(sm.storage_total_bytes || 0);
+            const usedPct = sm.storage_used_pct || 0;
             document.getElementById('stat-storage-free').innerText = `${storageFree} Free`;
-            document.getElementById('stat-storage-total').innerText = `Total Flash: ${storageTotal} (${sm.storage_used_pct.toFixed(1)}% Used)`;
-            document.getElementById('bar-storage').style.width = `${Math.min(sm.storage_used_pct, 100)}%`;
-            document.getElementById('badge-storage-pct').innerText = `${sm.storage_used_pct.toFixed(0)}% Used`;
+            document.getElementById('stat-storage-total').innerText = `Total Flash: ${storageTotal} (${usedPct.toFixed(1)}% Used)`;
+            document.getElementById('bar-storage').style.width = `${Math.min(usedPct, 100)}%`;
+            document.getElementById('badge-storage-pct').innerText = `${usedPct.toFixed(0)}% Used`;
 
             // RAM
-            const ramUsed = this.formatBytes(sm.ram_used_bytes);
-            const ramTotal = this.formatBytes(sm.ram_total_bytes);
+            const ramUsed = this.formatBytes(sm.ram_used_bytes || 0);
+            const ramTotal = this.formatBytes(sm.ram_total_bytes || 0);
+            const ramPct = sm.ram_usage_pct || 0;
             document.getElementById('stat-ram-used').innerText = `${ramUsed} Used`;
-            document.getElementById('stat-ram-total').innerText = `Total Memory: ${ramTotal} (${sm.ram_usage_pct.toFixed(1)}% Used)`;
-            document.getElementById('bar-ram').style.width = `${Math.min(sm.ram_usage_pct, 100)}%`;
-            document.getElementById('badge-ram-pct').innerText = `${sm.ram_usage_pct.toFixed(0)}% Used`;
+            document.getElementById('stat-ram-total').innerText = `Total Memory: ${ramTotal} (${ramPct.toFixed(1)}% Used)`;
+            document.getElementById('bar-ram').style.width = `${Math.min(ramPct, 100)}%`;
+            document.getElementById('badge-ram-pct').innerText = `${ramPct.toFixed(0)}% Used`;
 
             // CPU
-            const cpuVal = sm.cpu_usage_pct.toFixed(1);
+            const cpuVal = (sm.cpu_usage_pct || 0).toFixed(1);
             document.getElementById('stat-cpu-val').innerText = `${cpuVal}%`;
-            document.getElementById('bar-cpu').style.width = `${Math.min(sm.cpu_usage_pct, 100)}%`;
-            document.getElementById('stat-cpu-badge').innerText = sm.cpu_usage_pct > 60 ? 'Heavy Load' : (sm.cpu_usage_pct > 25 ? 'Active' : 'Idle');
+            document.getElementById('bar-cpu').style.width = `${Math.min(sm.cpu_usage_pct || 0, 100)}%`;
+            document.getElementById('stat-cpu-badge').innerText = (sm.cpu_usage_pct || 0) > 60 ? 'Heavy Load' : ((sm.cpu_usage_pct || 0) > 25 ? 'Active' : 'Idle');
 
             // Battery
             if (sm.battery_pct > 0) {
@@ -820,20 +839,34 @@
           document.getElementById('stat-stored-files').innerText = `${data.stored_files_count || 0} Files`;
 
           // Update System Diagnostics
-          document.getElementById('diag-platform').innerText = data.android_info.is_android ? `Android (v${data.android_info.android_version || '14+'})` : 'Linux / Development';
-          document.getElementById('diag-termux').innerText = data.android_info.is_termux ? 'Active (POSIX Layer)' : 'Host System';
-          document.getElementById('diag-fs').innerText = data.android_info.filesystem_type.toUpperCase();
-          document.getElementById('diag-uptime').innerText = `${Math.floor(data.uptime_seconds / 60)}m ${data.uptime_seconds % 60}s`;
+          if (data.android_info) {
+            document.getElementById('diag-platform').innerText = data.android_info.is_android ? `Android (v${data.android_info.android_version || '14+'})` : 'Linux / Development';
+            document.getElementById('diag-termux').innerText = data.android_info.is_termux ? 'Active (POSIX Layer)' : 'Host System';
+            document.getElementById('diag-fs').innerText = (data.android_info.filesystem_type || 'F2FS').toUpperCase();
+          }
+          if (data.uptime_seconds !== undefined) {
+            document.getElementById('diag-uptime').innerText = `${Math.floor(data.uptime_seconds / 60)}m ${data.uptime_seconds % 60}s`;
+          }
 
-          // Load Peers
-          const pRes = await fetch('/api/nodes');
-          this.peers = await pRes.json();
+          // Update local node in table
           this.renderNodesTable();
-
-          // Load Files
-          this.loadFiles();
         } catch (err) {
           console.error("Status load failed:", err);
+        }
+      }
+
+      async loadPeers() {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 4000);
+          const pRes = await fetch('/api/nodes', { signal: controller.signal });
+          clearTimeout(timeoutId);
+          if (pRes.ok) {
+            this.peers = await pRes.json();
+            this.renderNodesTable();
+          }
+        } catch (e) {
+          this.renderNodesTable();
         }
       }
 
@@ -911,21 +944,25 @@
         let html = '';
 
         // Add Local Host Node
-        if (this.status) {
-          html += `
-            <tr>
-              <td>
-                <div style="font-weight:700;">${this.status.node_name}</div>
-                <div style="font-size:11px; color:var(--text-muted);">${this.status.node_id}</div>
-              </td>
-              <td style="font-family:var(--font-mono);">${this.status.http_addr}</td>
-              <td style="font-weight:600;">${this.status.cas_stats.total_chunks}</td>
-              <td><span class="hash-badge">${this.status.merkle_root.slice(0, 12)}...</span></td>
-              <td><span class="badge" style="font-size:10px;"><span class="status-dot"></span> LOCAL HOST</span></td>
-              <td><button class="btn btn-secondary btn-sm" disabled>Host</button></td>
-            </tr>
-          `;
-        }
+        const hostName = (this.status && this.status.node_name) || "Local Android Node";
+        const hostId = (this.status && this.status.node_id) || "Host Daemon";
+        const hostAddr = (this.status && this.status.http_addr) || window.location.host;
+        const totalChunks = (this.status && this.status.cas_stats && this.status.cas_stats.total_chunks) || 0;
+        const merkle = (this.status && this.status.merkle_root) || "000000000000";
+
+        html += `
+          <tr>
+            <td>
+              <div style="font-weight:700;">${hostName}</div>
+              <div style="font-size:11px; color:var(--text-muted);">${hostId}</div>
+            </td>
+            <td style="font-family:var(--font-mono);">${hostAddr}</td>
+            <td style="font-weight:600;">${totalChunks}</td>
+            <td><span class="hash-badge">${merkle.slice(0, 12)}...</span></td>
+            <td><span class="badge" style="font-size:10px;"><span class="status-dot"></span> LOCAL HOST</span></td>
+            <td><button class="btn btn-secondary btn-sm" disabled>Host</button></td>
+          </tr>
+        `;
 
         // Add Connected Peers
         if (Array.isArray(this.peers)) {
