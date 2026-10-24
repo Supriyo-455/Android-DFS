@@ -139,7 +139,8 @@ func main() {
 		Timestamp:   time.Now(),
 	}
 
-	multicast, err := discovery.NewMulticastDiscovery(cfg.MulticastAddr, announcement, func(p discovery.PeerAnnouncement) {
+	// Step 6: Zero-Configuration Autonomous Peer Discovery (Multicast + Subnet Scan)
+	handleDiscoveredPeer := func(p discovery.PeerAnnouncement) {
 		if p.Leaving {
 			routingTable.RemovePeer(p.NodeID)
 		} else {
@@ -155,9 +156,13 @@ func main() {
 				Status:      gossip.StatusActive,
 				LastSeen:    time.Now(),
 			})
+			go func(addr string) {
+				_ = gossipEngine.ConnectPeer(addr)
+			}(p.HTTPAddr)
 		}
-	})
+	}
 
+	multicast, err := discovery.NewMulticastDiscovery(cfg.MulticastAddr, announcement, handleDiscoveredPeer)
 	if err != nil {
 		log.Printf("[WARNING] UDP Multicast initialization warning: %v. Running in localized discovery mode.", err)
 	} else {
@@ -165,6 +170,10 @@ func main() {
 			log.Printf("[WARNING] Multicast start failed: %v", err)
 		}
 	}
+
+	// Autonomous Wi-Fi Subnet Scanner (discovers all DFS peers on LAN without command line addresses)
+	subnetScanner := discovery.NewSubnetScanner(cfg.NodeID, localIP, portStr, handleDiscoveredPeer)
+	subnetScanner.Start()
 
 	// Step 7: HTTP API & Embedded Web Dashboard
 	apiServer := api.NewServer(cfg, casStore, manifestStore, fastcdc, f2fsOpt, routingTable, gossipEngine, hub, androidInfo)
@@ -203,10 +212,11 @@ func main() {
 	sig := <-sigChan
 	log.Printf("[SHUTDOWN] Received signal %v. Initiating graceful cluster departure...", sig)
 
-	// Stop multicast & leave cluster
+	// Stop multicast & subnet scanner
 	if multicast != nil {
 		multicast.Stop()
 	}
+	subnetScanner.Stop()
 
 	// Stop gossip
 	gossipEngine.Stop()

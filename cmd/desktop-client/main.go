@@ -25,13 +25,14 @@ func main() {
 	var dataDir string
 
 	flag.StringVar(&port, "port", ":9000", "Desktop Web Dashboard listen port (e.g. :9000)")
-	flag.StringVar(&initialPhones, "phones", "192.168.0.110:8080,192.168.0.105:8080", "Initial comma-separated phone addresses to manage")
+	flag.StringVar(&initialPhones, "phones", "", "Optional initial phone addresses (auto-discovery discovers phones autonomously)")
 	flag.StringVar(&multicastAddr, "multicast", "239.0.0.1:40000", "UDP Multicast group for auto-discovering phone nodes")
 	flag.StringVar(&dataDir, "data-dir", "desktop_cloud_data", "Local directory for manifest catalog")
 	flag.Parse()
 
 	log.Println("=================================================================")
 	log.Println("  MobileDFS | Personal Desktop Cloud Storage Controller          ")
+	log.Println("  (Zero-Configuration Autonomous Phone Discovery Active)         ")
 	log.Println("=================================================================")
 
 	// Initialize desktop server
@@ -40,7 +41,7 @@ func main() {
 		log.Fatalf("[FATAL] Failed to initialize desktop cloud server: %v", err)
 	}
 
-	// Register initial phones from command-line arguments
+	// Register initial phones if explicitly passed
 	if initialPhones != "" {
 		for _, addr := range strings.Split(initialPhones, ",") {
 			addr = strings.TrimSpace(addr)
@@ -53,7 +54,14 @@ func main() {
 	// Start background poller to monitor phone telemetry, RAM, CPU, Battery, and Storage
 	server.StartBackgroundPoller()
 
-	// Zero-Configuration LAN Auto-Discovery via UDP Multicast
+	// Handler for discovered phone nodes
+	onPhoneDiscovered := func(p discovery.PeerAnnouncement) {
+		if !p.Leaving && p.HTTPAddr != "" && p.NodeID != "desktop-controller" {
+			server.AddPhone(p.HTTPAddr)
+		}
+	}
+
+	// Layer 1 & 2: UDP Multicast & Broadcast Discovery
 	announcement := discovery.PeerAnnouncement{
 		NodeID:    "desktop-controller",
 		NodeName:  "Desktop Client",
@@ -62,11 +70,7 @@ func main() {
 		Timestamp: time.Now(),
 	}
 
-	multicast, err := discovery.NewMulticastDiscovery(multicastAddr, announcement, func(p discovery.PeerAnnouncement) {
-		if !p.Leaving && p.HTTPAddr != "" && p.NodeID != "desktop-controller" {
-			server.AddPhone(p.HTTPAddr)
-		}
-	})
+	multicast, err := discovery.NewMulticastDiscovery(multicastAddr, announcement, onPhoneDiscovered)
 	if err == nil {
 		if err := multicast.Start(); err != nil {
 			log.Printf("[WARNING] UDP Multicast listener error: %v", err)
@@ -74,6 +78,10 @@ func main() {
 			log.Printf("[DISCOVERY] Listening for phone broadcasts on %s", multicastAddr)
 		}
 	}
+
+	// Layer 3: Autonomous Subnet Scanner (scans local Wi-Fi /24 subnet for phones)
+	subnetScanner := discovery.NewSubnetScanner("desktop-controller", "", port, onPhoneDiscovered)
+	subnetScanner.Start()
 
 	// Set up HTTP mux
 	mux := http.NewServeMux()
@@ -124,6 +132,7 @@ func main() {
 	if multicast != nil {
 		multicast.Stop()
 	}
+	subnetScanner.Stop()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
