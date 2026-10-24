@@ -1,4 +1,4 @@
-# Android Distributed Storage System (MobileDFS)
+# Android Distributed Storage System (Android-DFS)
 
 [![Go Version](https://img.shields.io/badge/Go-1.21%2B-00ADD8?style=flat&logo=go)](https://golang.org)
 [![Android](https://img.shields.io/badge/Platform-Android%20%7C%20Termux-3DDC84?style=flat&logo=android)](https://termux.dev)
