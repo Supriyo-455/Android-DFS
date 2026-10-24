@@ -140,3 +140,44 @@ func (m *ManifestStore) ReassembleFile(identifier string, cas *ContentAddressabl
 
 	return nil
 }
+
+// DeleteFile removes a file manifest and prunes associated CAS chunks that are no longer used by any other file.
+func (m *ManifestStore) DeleteFile(identifier string, cas *ContentAddressableStore) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	rec, exists := m.files[identifier]
+	if !exists {
+		return ErrFileNotFound
+	}
+
+	// Delete from manifest map
+	delete(m.files, rec.ID)
+	if rec.Filename != "" && m.files[rec.Filename].ID == rec.ID {
+		delete(m.files, rec.Filename)
+	}
+
+	// Delete manifest metadata file from disk
+	manifestPath := filepath.Join(m.metaDir, rec.ID+".json")
+	_ = os.Remove(manifestPath)
+
+	// Collect remaining chunk hashes still in use by other files
+	usedChunks := make(map[string]bool)
+	for _, f := range m.files {
+		for _, h := range f.ChunkHashes {
+			usedChunks[h] = true
+		}
+	}
+
+	// Delete unreferenced chunks from CAS store
+	if cas != nil {
+		for _, h := range rec.ChunkHashes {
+			if !usedChunks[h] {
+				_ = cas.Delete(h)
+			}
+		}
+		cas.Rescan()
+	}
+
+	return nil
+}

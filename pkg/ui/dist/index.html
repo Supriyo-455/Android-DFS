@@ -282,6 +282,49 @@
       font-size: 11px;
     }
 
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.4);
+      color: #ef4444;
+    }
+
+    .btn-danger:hover {
+      background: #ef4444;
+      color: #fff;
+    }
+
+    .scroll-table-box {
+      max-height: 380px;
+      overflow-y: auto;
+      overflow-x: auto;
+    }
+
+    .scroll-table-box::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    .scroll-table-box::-webkit-scrollbar-track {
+      background: var(--bg-surface);
+    }
+
+    .scroll-table-box::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 4px;
+    }
+
+    .scroll-table-box::-webkit-scrollbar-thumb:hover {
+      background: var(--text-muted);
+    }
+
+    .sticky-header th {
+      position: sticky;
+      top: 0;
+      background: var(--bg-surface);
+      z-index: 5;
+      box-shadow: 0 1px 0 var(--border);
+    }
+
     /* Ingestion File / Text Area */
     .upload-area {
       border: 2px dashed var(--border);
@@ -547,21 +590,27 @@
         <!-- Stored Files Explorer & Retrieval -->
         <div class="card">
           <div class="card-header">
-            <div class="card-title">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                <polyline points="14 2 14 8 20 8"/>
-                <line x1="16" y1="13" x2="8" y2="13"/>
-                <line x1="16" y1="17" x2="8" y2="17"/>
-                <polyline points="10 9 9 9 8 9"/>
-              </svg>
-              Stored Files & Downloads (CAS Reassembly)
+            <div style="display:flex; align-items:center; gap:10px;">
+              <div class="card-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                  <line x1="16" y1="13" x2="8" y2="13"/>
+                  <line x1="16" y1="17" x2="8" y2="17"/>
+                  <polyline points="10 9 9 9 8 9"/>
+                </svg>
+                Stored Files & Downloads (CAS Reassembly)
+              </div>
+              <span class="badge" id="badge-files-count" style="font-size:11px;">0 Files</span>
             </div>
-            <button class="btn btn-secondary btn-sm" id="btn-refresh-files">Refresh Files</button>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <input type="text" id="file-search-input" placeholder="Filter files..." style="padding:4px 10px; font-size:12px; border-radius:6px; background:rgba(255,255,255,0.05); border:1px solid var(--border); color:var(--text); width:130px;" oninput="window.DFS.filterFiles(this.value)" />
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-files">Refresh Files</button>
+            </div>
           </div>
-          <div class="card-body" style="padding:0;">
-            <table class="data-table">
-              <thead>
+          <div class="card-body scroll-table-box" style="padding:0;">
+            <table class="data-table" style="margin-bottom:0;">
+              <thead class="sticky-header">
                 <tr>
                   <th>Filename</th>
                   <th>Size</th>
@@ -904,52 +953,113 @@
         try {
           const res = await fetch('/api/files');
           const files = await res.json();
-          const tbody = document.getElementById('files-tbody');
-
-          if (!Array.isArray(files) || files.length === 0) {
-            tbody.innerHTML = `
-              <tr>
-                <td colspan="5" style="text-align:center; color:var(--text-muted); padding:20px;">
-                  No files stored yet. Upload a file above to store it across CAS chunks!
-                </td>
-              </tr>
-            `;
-            return;
-          }
-
-          let html = '';
-          for (const f of files) {
-            const uploadDate = new Date(f.upload_time).toLocaleString();
-            html += `
-              <tr>
-                <td>
-                  <div style="font-weight:700;">${f.filename}</div>
-                  <div style="font-size:10px; font-family:var(--font-mono); color:var(--text-muted);">${f.id.slice(0, 16)}...</div>
-                </td>
-                <td style="font-weight:600;">${this.formatBytes(f.size)}</td>
-                <td><span class="badge" style="font-size:11px;">${f.chunk_count} Chunks</span></td>
-                <td style="font-size:11px; color:var(--text-muted);">${uploadDate}</td>
-                <td>
-                  <div style="display:flex; gap:6px;">
-                    <button class="btn btn-sm" onclick="window.DFS.downloadFile('${f.id}')">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="7 10 12 15 17 10"/>
-                        <line x1="12" y1="15" x2="12" y2="3"/>
-                      </svg>
-                      Download
-                    </button>
-                    <button class="btn btn-secondary btn-sm" onclick="window.DFS.inspectFile('${f.id}')">
-                      Chunks
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            `;
-          }
-          tbody.innerHTML = html;
+          this.cachedFiles = Array.isArray(files) ? files : [];
+          const filterInput = document.getElementById('file-search-input');
+          const filterVal = filterInput ? filterInput.value : '';
+          this.renderFiles(filterVal);
         } catch (e) {
           console.error("Load files error:", e);
+        }
+      }
+
+      filterFiles(query) {
+        this.renderFiles(query);
+      }
+
+      renderFiles(query = '') {
+        const tbody = document.getElementById('files-tbody');
+        const badgeCount = document.getElementById('badge-files-count');
+        const files = this.cachedFiles || [];
+
+        if (badgeCount) {
+          badgeCount.innerText = `${files.length} Files`;
+        }
+
+        const q = (query || '').trim().toLowerCase();
+        const filtered = q === ''
+          ? files
+          : files.filter(f => (f.filename && f.filename.toLowerCase().includes(q)) || (f.id && f.id.toLowerCase().includes(q)));
+
+        if (filtered.length === 0) {
+          tbody.innerHTML = `
+            <tr>
+              <td colspan="5" style="text-align:center; color:var(--text-muted); padding:24px;">
+                ${files.length === 0 ? 'No files stored yet. Upload a file below to store it across CAS chunks!' : 'No matching files found.'}
+              </td>
+            </tr>
+          `;
+          return;
+        }
+
+        let html = '';
+        for (const f of filtered) {
+          const uploadDate = new Date(f.upload_time).toLocaleString();
+          const cleanName = (f.filename || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+          html += `
+            <tr>
+              <td>
+                <div style="font-weight:700; display:flex; align-items:center; gap:6px;">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--primary); flex-shrink:0;">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                  <span>${f.filename}</span>
+                </div>
+                <div style="font-size:10px; font-family:var(--font-mono); color:var(--text-muted); margin-left:20px;">${f.id.slice(0, 16)}...</div>
+              </td>
+              <td style="font-weight:600;">${this.formatBytes(f.size)}</td>
+              <td><span class="badge" style="font-size:11px;">${f.chunk_count} Chunks</span></td>
+              <td style="font-size:11px; color:var(--text-muted);">${uploadDate}</td>
+              <td>
+                <div style="display:flex; gap:6px; align-items:center;">
+                  <button class="btn btn-sm" onclick="window.DFS.downloadFile('${f.id}')" title="Reassemble & Download">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                      <polyline points="7 10 12 15 17 10"/>
+                      <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    Download
+                  </button>
+                  <button class="btn btn-secondary btn-sm" onclick="window.DFS.inspectFile('${f.id}')" title="Inspect CAS Chunks">
+                    Chunks
+                  </button>
+                  <button class="btn btn-danger btn-sm" onclick="window.DFS.deleteFile('${f.id}', '${cleanName}')" title="Delete File and Clean CAS Chunks">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="3 6 5 6 21 6"></polyline>
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                    </svg>
+                    Delete
+                  </button>
+                </div>
+              </td>
+            </tr>
+          `;
+        }
+        tbody.innerHTML = html;
+      }
+
+      async deleteFile(fileId, filename) {
+        if (!confirm(`Are you sure you want to delete "${filename}"?\n\nThis will remove the file manifest and clean up its CAS chunks from this phone.`)) {
+          return;
+        }
+
+        try {
+          const res = await fetch('/api/files/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: fileId })
+          });
+          const result = await res.json();
+          if (res.ok && result.status === 'success') {
+            this.showToast(`Deleted "${filename}" successfully`);
+            this.logEvent('STORAGE', `Deleted file "${filename}" and pruned CAS chunks`, '#ef4444');
+            this.loadFiles();
+            this.loadStatus();
+          } else {
+            alert(`Failed to delete file: ${result.error || 'Unknown error'}`);
+          }
+        } catch (err) {
+          alert(`Failed to delete file: ${err.message}`);
         }
       }
 

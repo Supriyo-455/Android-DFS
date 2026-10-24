@@ -1,0 +1,20 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+storage-node
+storage-node.exe
+
+# Output of the go coverage tool
+*.out
+
+# Go cache & temp dirs
+.gocache/
+*.tmp
+*.tmp.*
+
+# OS specific
+.DS_Store
+Thumbs.db

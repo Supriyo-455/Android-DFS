@@ -68,6 +68,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/gossip", s.handleGossip)
 	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.HandleFunc("/api/files", s.handleFiles)
+	mux.HandleFunc("/api/files/delete", s.handleFileDelete)
 	mux.HandleFunc("/api/files/download", s.handleFileDownload)
 	mux.HandleFunc("/api/files/download/", s.handleFileDownload)
 	mux.HandleFunc("/api/chunks/list", s.handleChunksList)
@@ -333,13 +334,77 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method == http.MethodGet {
+		files := s.manifests.ListFiles()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(files)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		s.handleFileDelete(w, r)
+		return
+	}
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	files := s.manifests.ListFiles()
+
+	var req struct {
+		ID string `json:"id"`
+	}
+
+	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	if req.ID == "" {
+		req.ID = r.URL.Query().Get("id")
+	}
+	if req.ID == "" {
+		req.ID = r.URL.Query().Get("name")
+	}
+
+	if req.ID == "" {
+		http.Error(w, `{"error":"Missing file ID"}`, http.StatusBadRequest)
+		return
+	}
+
+	rec, exists := s.manifests.GetFile(req.ID)
+	if !exists {
+		http.Error(w, `{"error":"File not found"}`, http.StatusNotFound)
+		return
+	}
+
+	if err := s.manifests.DeleteFile(req.ID, s.cas); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	hashes, _ := s.cas.ListHashes()
+	newTree := entropy.NewMerkleTree(hashes)
+
+	// Broadcast file deletion event to cluster dashboard
+	s.hub.BroadcastEvent(gossip.ClusterEvent{
+		Type:       "file_deleted",
+		SourceNode: s.cfg.NodeID,
+		Data: map[string]interface{}{
+			"file_id":     rec.ID,
+			"filename":    rec.Filename,
+			"merkle_root": newTree.RootHash(),
+		},
+		Timestamp: time.Now(),
+	})
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(files)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":          "success",
+		"file_id":         rec.ID,
+		"filename":        rec.Filename,
+		"new_merkle_root": newTree.RootHash(),
+	})
 }
 
 func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {

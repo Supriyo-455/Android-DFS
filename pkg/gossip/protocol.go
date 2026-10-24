@@ -296,27 +296,13 @@ func (g *GossipEngine) triggerAntiEntropySync(peer PeerNode) {
 		remoteTree := entropy.NewMerkleTree(remoteHashes)
 
 		result := entropy.Reconcile(localTree, remoteTree)
-		log.Printf("[ANTI-ENTROPY] Reconciled with %s: %s", peer.Name, result.AntiEntropySummary())
+		log.Printf("[ANTI-ENTROPY] Reconciled with %s: remote has %d chunks not present locally (auto-replication disabled to preserve combined storage capacity)", peer.Name, len(result.ChunksToPull))
 
-		// Pull missing chunks from remote peer
-		for _, hashToPull := range result.ChunksToPull {
-			chunkURL := fmt.Sprintf("http://%s/api/chunks/%s", peer.HTTPAddr, hashToPull)
-			cReq, err := http.NewRequestWithContext(g.ctx, "GET", chunkURL, nil)
-			if err != nil {
-				continue
-			}
-
-			cResp, err := g.httpClient.Do(cReq)
-			if err != nil {
-				continue
-			}
-
-			chunkBuf := new(bytes.Buffer)
-			_, _ = chunkBuf.ReadFrom(cResp.Body)
-			cResp.Body.Close()
-
-			_, _ = g.casStore.Put(hashToPull, chunkBuf.Bytes())
-		}
+		// NOTE: Automatic chunk replication across all phones is intentionally skipped.
+		// In mobile clusters with limited devices, replicating chunks copies identical data onto
+		// every device, halving total usable cluster capacity (e.g. 2x 64GB phones would only
+		// store 64GB instead of 128GB). Disabling auto-replication preserves true combined storage.
+		_ = result
 	}()
 }
 

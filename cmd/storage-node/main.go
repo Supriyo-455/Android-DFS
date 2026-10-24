@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -38,6 +39,8 @@ func main() {
 	flag.BoolVar(&cfg.AndroidMode, "android", cfg.AndroidMode, "Force Android/Termux execution environment mode")
 	flag.BoolVar(&cfg.WakeLockEnabled, "wakelock", cfg.WakeLockEnabled, "Acquire PARTIAL_WAKE_LOCK to prevent CPU sleep")
 	var seedPeers string
+	var overrideIP string
+	flag.StringVar(&overrideIP, "ip", "", "Explicit IP address to advertise for this node (overrides auto-detection)")
 	flag.StringVar(&seedPeers, "peer", "", "Optional peer address to connect to on startup (e.g. 192.168.0.110:8080)")
 	flag.StringVar(&seedPeers, "peers", "", "Optional comma-separated peer addresses to connect to on startup")
 	flag.IntVar(&cfg.CDCAvgSize, "cdc-avg-size", cfg.CDCAvgSize, "FastCDC target chunk size in bytes")
@@ -101,7 +104,8 @@ func main() {
 	if strings.HasPrefix(portStr, ":") {
 		portStr = portStr[1:]
 	}
-	localAddr := fmt.Sprintf("%s:%s", getLocalIP(), portStr)
+	localIP := getLocalIP(overrideIP)
+	localAddr := fmt.Sprintf("%s:%s", localIP, portStr)
 
 	gossipEngine := gossip.NewGossipEngine(cfg.NodeID, routingTable, casStore, cfg.GossipInterval, eventChannel)
 	gossipEngine.SetLocalDetails(cfg.NodeName, localAddr)
@@ -180,7 +184,6 @@ func main() {
 	}
 
 	go func() {
-		localIP := getLocalIP()
 		port := cfg.HTTPAddr
 		if strings.HasPrefix(port, ":") {
 			port = port[1:]
@@ -221,17 +224,69 @@ func main() {
 	log.Printf("[SHUTDOWN] Node terminated cleanly.")
 }
 
-func getLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return "127.0.0.1"
+func getLocalIP(override string) string {
+	if override != "" {
+		return strings.TrimSpace(override)
 	}
-	for _, address := range addrs {
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
+
+	// Technique 1: Kernel routing table query via UDP socket connect.
+	// In the Linux/Android kernel, net.Dial on UDP does not transmit network packets,
+	// but causes the kernel to populate the socket's source IP with the active Wi-Fi interface IP.
+	// This works reliably on Android 14/15 where net.InterfaceAddrs() is blocked by SELinux.
+	probeAddrs := []string{
+		"8.8.8.8:80",
+		"1.1.1.1:80",
+		"224.0.0.1:80",
+		"192.168.0.1:80",
+		"192.168.1.1:80",
+		"10.0.0.1:80",
+	}
+	for _, target := range probeAddrs {
+		conn, err := net.DialTimeout("udp", target, 400*time.Millisecond)
+		if err == nil {
+			localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+			_ = conn.Close()
+			if ok && localAddr.IP != nil && !localAddr.IP.IsLoopback() && localAddr.IP.To4() != nil {
+				ipStr := localAddr.IP.String()
+				if !strings.HasPrefix(ipStr, "127.") {
+					return ipStr
+				}
 			}
 		}
 	}
+
+	// Technique 2: "ip route get" shell command in Termux
+	if out, err := exec.Command("ip", "route", "get", "1.1.1.1").Output(); err == nil {
+		fields := strings.Fields(string(out))
+		for i, f := range fields {
+			if f == "src" && i+1 < len(fields) {
+				candidate := fields[i+1]
+				if ip := net.ParseIP(candidate); ip != nil && !ip.IsLoopback() && ip.To4() != nil {
+					return candidate
+				}
+			}
+		}
+	}
+
+	// Technique 3: Android DHCP properties via getprop
+	if out, err := exec.Command("getprop", "dhcp.wlan0.ipaddress").Output(); err == nil {
+		candidate := strings.TrimSpace(string(out))
+		if ip := net.ParseIP(candidate); ip != nil && !ip.IsLoopback() && ip.To4() != nil {
+			return candidate
+		}
+	}
+
+	// Technique 4: Traditional interface inspection
+	addrs, err := net.InterfaceAddrs()
+	if err == nil {
+		for _, address := range addrs {
+			if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					return ipnet.IP.String()
+				}
+			}
+		}
+	}
+
 	return "127.0.0.1"
 }

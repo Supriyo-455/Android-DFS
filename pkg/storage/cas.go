@@ -144,6 +144,38 @@ func (c *ContentAddressableStore) Get(hash string) ([]byte, error) {
 	return data, nil
 }
 
+// Delete removes a chunk file from the CAS store if it exists.
+func (c *ContentAddressableStore) Delete(hash string) error {
+	path, err := c.ShardedPath(hash)
+	if err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil // File already doesn't exist
+	}
+	size := info.Size()
+
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+
+	c.uniqueChunks.Add(-1)
+	c.totalChunks.Add(-1)
+	c.storedBytes.Add(-size)
+	c.ingestedBytes.Add(-size)
+	return nil
+}
+
+// Rescan re-counts total chunks and bytes from disk to ensure metric consistency.
+func (c *ContentAddressableStore) Rescan() {
+	c.scanExisting()
+}
+
 // OpenChunk returns an open read-stream for a chunk.
 func (c *ContentAddressableStore) OpenChunk(hash string) (io.ReadCloser, error) {
 	path, err := c.ShardedPath(hash)
