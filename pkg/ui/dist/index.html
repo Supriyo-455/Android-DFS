@@ -494,7 +494,20 @@
             <span style="font-size:11px; color:var(--text-muted);">Gear Matrix Rolling Hash</span>
           </div>
           <div class="card-body">
-            <textarea id="ingest-input" rows="3" placeholder="Paste text or stream payload to test FastCDC chunking and CAS deduplication..."></textarea>
+            <!-- Drag and Drop / File Input -->
+            <input type="file" id="file-upload-input" style="display:none;" />
+            <div class="upload-area" id="drop-area" onclick="document.getElementById('file-upload-input').click()">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin:0 auto 8px; color:var(--primary); display:block;">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <div style="font-weight:700; font-size:14px;">Click to Select Any File or Drag & Drop Here</div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">Upload images, PDFs, videos, or archives to chunk and distribute</div>
+            </div>
+
+            <div style="margin-bottom:8px; font-size:12px; color:var(--text-muted);">Or paste raw text / data payload:</div>
+            <textarea id="ingest-input" rows="2" placeholder="Type or paste payload here..."></textarea>
             
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
               <button class="btn" id="btn-ingest">
@@ -505,7 +518,7 @@
 
             <div class="chunk-list" id="chunk-list-container">
               <div style="padding:16px; text-align:center; color:var(--text-muted); font-size:12px;">
-                Ingest content above to inspect FastCDC chunk boundaries and SHA-256 CAS identifiers.
+                Upload a file or enter content above to inspect FastCDC chunk boundaries and SHA-256 CAS identifiers.
               </div>
             </div>
           </div>
@@ -598,6 +611,67 @@
         document.getElementById('btn-refresh-nodes').addEventListener('click', () => this.loadStatus());
         document.getElementById('btn-ingest').addEventListener('click', () => this.executeIngest());
         document.getElementById('btn-spawn-peer').addEventListener('click', () => this.spawnSimulatedPeer());
+
+        // File Upload Picker & Drag-and-Drop
+        const fileInput = document.getElementById('file-upload-input');
+        const dropArea = document.getElementById('drop-area');
+
+        fileInput.addEventListener('change', (e) => {
+          if (e.target.files && e.target.files[0]) {
+            this.uploadRawFile(e.target.files[0]);
+          }
+        });
+
+        dropArea.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          dropArea.style.borderColor = 'var(--primary)';
+        });
+
+        dropArea.addEventListener('dragleave', () => {
+          dropArea.style.borderColor = 'var(--border)';
+        });
+
+        dropArea.addEventListener('drop', (e) => {
+          e.preventDefault();
+          dropArea.style.borderColor = 'var(--border)';
+          if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+            this.uploadRawFile(e.dataTransfer.files[0]);
+          }
+        });
+      }
+
+      async uploadRawFile(file) {
+        const container = document.getElementById('chunk-list-container');
+        container.innerHTML = `<div style="padding:16px; text-align:center; color:var(--primary); font-size:12px;">Reading & Chunking "${file.name}" (${this.formatBytes(file.size)})...</div>`;
+
+        try {
+          const res = await fetch('/api/upload', {
+            method: 'POST',
+            body: file
+          });
+          const data = await res.json();
+
+          document.getElementById('ingest-stats').innerText = 
+            `Uploaded "${file.name}": ${data.file_size} B into ${data.chunks_generated} chunks (${data.unique_chunks} new, ${data.dedup_chunks} dedup hits)`;
+
+          let html = '';
+          for (const c of data.chunks) {
+            html += `
+              <div class="chunk-item">
+                <span class="hash-badge">${c.hash.slice(0, 20)}...</span>
+                <span>Offset: ${c.offset} | Len: ${c.length}B</span>
+                <span class="${c.is_new ? 'tag-new' : 'tag-dedup'}">${c.is_new ? 'NEW CHUNK' : 'DEDUP HIT'}</span>
+              </div>
+            `;
+          }
+          container.innerHTML = html;
+
+          this.logEvent('STORAGE', `Uploaded "${file.name}" (${this.formatBytes(file.size)}) -> ${data.chunks_generated} CAS blocks`, '#10b981');
+          this.showToast(`Stored "${file.name}" in CAS`);
+          this.loadStatus();
+        } catch (e) {
+          container.innerHTML = `<div style="padding:16px; color:var(--danger); font-size:12px;">Upload failed: ${e.message}</div>`;
+        }
       }
 
       async loadStatus() {
