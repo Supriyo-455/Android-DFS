@@ -5,9 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -148,7 +150,14 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("[HTTP] Mobile Cluster Dashboard & REST API online at http://%s/", cfg.HTTPAddr)
+		localIP := getLocalIP()
+		port := cfg.HTTPAddr
+		if strings.HasPrefix(port, ":") {
+			port = port[1:]
+		}
+		log.Printf("[HTTP] Mobile Cluster Dashboard & REST API online:")
+		log.Printf("       -> Phone Wi-Fi URL:      http://%s:%s/", localIP, port)
+		log.Printf("       -> SSH Forwarded URL:    http://localhost:%s/ (if using ssh -L %s:localhost:%s)", port, port, port)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("[FATAL] HTTP server error: %v", err)
 		}
@@ -180,4 +189,19 @@ func main() {
 	}
 
 	log.Printf("[SHUTDOWN] Node terminated cleanly.")
+}
+
+func getLocalIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "127.0.0.1"
+	}
+	for _, address := range addrs {
+		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				return ipnet.IP.String()
+			}
+		}
+	}
+	return "127.0.0.1"
 }
