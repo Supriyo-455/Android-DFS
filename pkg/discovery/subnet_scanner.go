@@ -157,14 +157,15 @@ func (s *SubnetScanner) probeTarget(host, port string) {
 	}
 
 	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return // Host offline or port closed
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		// Fallback probe to /api/chunks/list (handles nodes whose /api/status may be slow or restricted)
+		s.fallbackProbeTarget(targetAddr)
 		return
 	}
+	defer resp.Body.Close()
 
 	var status struct {
 		NodeID      string `json:"node_id"`
@@ -212,6 +213,47 @@ func (s *SubnetScanner) probeTarget(host, port string) {
 	}
 
 	log.Printf("[AUTODISCOVERY] Autonomous sweep discovered %s at %s", status.NodeName, targetAddr)
+	if s.onPeerFound != nil {
+		s.onPeerFound(ann)
+	}
+}
+
+func (s *SubnetScanner) fallbackProbeTarget(targetAddr string) {
+	reqURL := fmt.Sprintf("http://%s/api/chunks/list", targetAddr)
+	ctx, cancel := context.WithTimeout(s.ctx, 1500*time.Millisecond)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+	if err != nil {
+		return
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	var hashes []string
+	if err := json.NewDecoder(resp.Body).Decode(&hashes); err != nil {
+		return
+	}
+
+	ann := PeerAnnouncement{
+		NodeID:      "node-" + strings.ReplaceAll(targetAddr, ".", "-"),
+		NodeName:    "Android Storage Node (" + targetAddr + ")",
+		Role:        "slave",
+		HTTPAddr:    targetAddr,
+		TotalChunks: int64(len(hashes)),
+		StoredBytes: int64(len(hashes)) * 64 * 1024,
+		IsAndroid:   true,
+		Timestamp:   time.Now(),
+	}
+
+	log.Printf("[AUTODISCOVERY] Autonomous sweep discovered active storage node at %s (%d chunks)", targetAddr, len(hashes))
 	if s.onPeerFound != nil {
 		s.onPeerFound(ann)
 	}
