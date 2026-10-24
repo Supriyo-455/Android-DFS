@@ -15,6 +15,11 @@ storage-node.exe
 *.tmp
 *.tmp.*
 
+# Data directories
+desktop_cloud_data/
+storage_data/
+.distributed-storage/
+
 # OS specific
 .DS_Store
 Thumbs.db

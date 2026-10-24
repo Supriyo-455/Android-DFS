@@ -220,8 +220,21 @@ func (ds *DesktopServer) pollSinglePhone(addr string) {
 	ds.phonesMu.Lock()
 	p, exists := ds.phones[addr]
 	if exists {
+		displayName := payload.NodeName
+		if displayName == "localhost" || displayName == "" {
+			if payload.AndroidInfo.IsAndroid {
+				if payload.AndroidInfo.AndroidVersion > 0 {
+					displayName = fmt.Sprintf("Android %d (%s)", payload.AndroidInfo.AndroidVersion, addr)
+				} else {
+					displayName = fmt.Sprintf("Android Phone (%s)", addr)
+				}
+			} else {
+				displayName = fmt.Sprintf("Phone (%s)", addr)
+			}
+		}
+
 		p.ID = payload.NodeID
-		p.Name = payload.NodeName
+		p.Name = displayName
 		p.Role = "slave"
 		p.Online = true
 		p.LastSeen = time.Now()

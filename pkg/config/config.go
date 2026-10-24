@@ -3,10 +3,13 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -54,8 +57,25 @@ func DefaultConfig() *Config {
 
 	randomID := generateRandomID(8)
 	hostname, err := os.Hostname()
-	if err != nil {
-		hostname = "android-node-" + randomID
+	if err != nil || hostname == "" || hostname == "localhost" {
+		deviceModel := ""
+		if isAndroid {
+			if out, err := exec.Command("getprop", "ro.product.model").Output(); err == nil {
+				deviceModel = strings.TrimSpace(string(out))
+			}
+			if deviceModel == "" {
+				if out, err := exec.Command("getprop", "ro.product.marketname").Output(); err == nil {
+					deviceModel = strings.TrimSpace(string(out))
+				}
+			}
+		}
+		if deviceModel != "" {
+			hostname = fmt.Sprintf("%s (%s)", deviceModel, randomID[:4])
+		} else if isAndroid {
+			hostname = "Android-Phone-" + randomID[:4]
+		} else {
+			hostname = "node-" + randomID[:6]
+		}
 	}
 
 	return &Config{
