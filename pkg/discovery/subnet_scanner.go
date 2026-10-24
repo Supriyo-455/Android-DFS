@@ -13,7 +13,7 @@ import (
 )
 
 // SubnetScanner performs fast, non-blocking zero-configuration autonomous sweeps
-// across the local Wi-Fi /24 subnet to discover storage nodes and desktop clients.
+// across local Wi-Fi /24 subnets to discover storage nodes and desktop clients.
 type SubnetScanner struct {
 	selfID      string
 	selfPort    string
@@ -52,15 +52,23 @@ func NewSubnetScanner(
 		ports = append(ports, cleanPort)
 	}
 
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+		MaxIdleConns:      100,
+	}
+
 	return &SubnetScanner{
 		selfID:      selfID,
 		selfPort:    cleanPort,
 		localIP:     localIP,
 		portsToScan: ports,
 		onPeerFound: onPeerFound,
-		httpClient:  &http.Client{Timeout: 800 * time.Millisecond},
-		ctx:         ctx,
-		cancel:      cancel,
+		httpClient: &http.Client{
+			Timeout:   1200 * time.Millisecond,
+			Transport: transport,
+		},
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 
@@ -70,11 +78,11 @@ func (s *SubnetScanner) Start() {
 	go func() {
 		defer s.wg.Done()
 
-		// Initial sweep immediately after node boot
-		time.Sleep(500 * time.Millisecond)
+		// Initial immediate autonomous sweep (200ms after startup)
+		time.Sleep(200 * time.Millisecond)
 		s.ScanOnce()
 
-		ticker := time.NewTicker(15 * time.Second)
+		ticker := time.NewTicker(8 * time.Second)
 		defer ticker.Stop()
 
 		for {
@@ -87,43 +95,39 @@ func (s *SubnetScanner) Start() {
 		}
 	}()
 
-	log.Printf("[AUTODISCOVERY] Autonomous subnet engine initialized for %s (ports %v)", s.localIP, s.portsToScan)
+	log.Printf("[AUTODISCOVERY] Autonomous subnet engine active (scanning ports %v)", s.portsToScan)
 }
 
-// ScanOnce performs a fast parallel sweep across all 254 addresses in the local /24 subnet.
+// ScanOnce performs a fast parallel sweep across all 254 addresses in all detected local /24 subnets.
 func (s *SubnetScanner) ScanOnce() {
-	ip := net.ParseIP(s.localIP)
-	if ip == nil || ip.IsLoopback() {
-		s.localIP = detectLocalIPv4()
-		ip = net.ParseIP(s.localIP)
-	}
-	ipv4 := ip.To4()
-	if ipv4 == nil || ipv4.IsLoopback() {
+	prefixes := getLocalSubnetPrefixes(s.localIP)
+	if len(prefixes) == 0 {
 		return
 	}
-
-	prefix := fmt.Sprintf("%d.%d.%d.", ipv4[0], ipv4[1], ipv4[2])
-	myLastByte := int(ipv4[3])
 
 	type target struct {
 		ip   string
 		port string
 	}
 
-	jobs := make(chan target, 255*len(s.portsToScan))
-	for i := 1; i <= 254; i++ {
-		if i == myLastByte {
-			continue // skip self
+	var targets []target
+	for _, prefix := range prefixes {
+		for i := 1; i <= 254; i++ {
+			hostIP := fmt.Sprintf("%s%d", prefix, i)
+			for _, port := range s.portsToScan {
+				targets = append(targets, target{ip: hostIP, port: port})
+			}
 		}
-		hostIP := fmt.Sprintf("%s%d", prefix, i)
-		for _, port := range s.portsToScan {
-			jobs <- target{ip: hostIP, port: port}
-		}
+	}
+
+	jobs := make(chan target, len(targets))
+	for _, t := range targets {
+		jobs <- t
 	}
 	close(jobs)
 
-	// Worker pool of 35 parallel goroutines
-	workerCount := 35
+	// Worker pool of 45 parallel goroutines
+	workerCount := 45
 	var scanWg sync.WaitGroup
 	for w := 0; w < workerCount; w++ {
 		scanWg.Add(1)
@@ -145,15 +149,7 @@ func (s *SubnetScanner) ScanOnce() {
 func (s *SubnetScanner) probeTarget(host, port string) {
 	targetAddr := fmt.Sprintf("%s:%s", host, port)
 
-	// Quick TCP pre-check (250ms timeout)
-	d := net.Dialer{Timeout: 250 * time.Millisecond}
-	conn, err := d.DialContext(s.ctx, "tcp", targetAddr)
-	if err != nil {
-		return // Host offline or port closed
-	}
-	_ = conn.Close()
-
-	// HTTP DFS status probe
+	// Probe DFS status endpoint directly
 	reqURL := fmt.Sprintf("http://%s/api/status", targetAddr)
 	req, err := http.NewRequestWithContext(s.ctx, "GET", reqURL, nil)
 	if err != nil {
@@ -162,7 +158,7 @@ func (s *SubnetScanner) probeTarget(host, port string) {
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return
+		return // Host offline or port closed
 	}
 	defer resp.Body.Close()
 
@@ -192,15 +188,11 @@ func (s *SubnetScanner) probeTarget(host, port string) {
 		return // Ignore self
 	}
 
-	actualAddr := targetAddr
-	if status.HTTPAddr != "" && !strings.HasPrefix(status.HTTPAddr, "127.") {
-		actualAddr = status.HTTPAddr
-	}
-
+	// ALWAYS use targetAddr: this is the verified reachable IP:Port that just answered!
 	ann := PeerAnnouncement{
 		NodeID:      status.NodeID,
 		NodeName:    status.NodeName,
-		HTTPAddr:    actualAddr,
+		HTTPAddr:    targetAddr,
 		MerkleRoot:  status.MerkleRoot,
 		TotalChunks: status.CASStats.TotalChunks,
 		StoredBytes: status.CASStats.StoredBytes,
@@ -208,7 +200,7 @@ func (s *SubnetScanner) probeTarget(host, port string) {
 		Timestamp:   time.Now(),
 	}
 
-	log.Printf("[AUTODISCOVERY] Subnet scanner autonomously discovered %s at %s", status.NodeName, actualAddr)
+	log.Printf("[AUTODISCOVERY] Autonomous sweep discovered %s at %s", status.NodeName, targetAddr)
 	if s.onPeerFound != nil {
 		s.onPeerFound(ann)
 	}
@@ -220,15 +212,55 @@ func (s *SubnetScanner) Stop() {
 	s.wg.Wait()
 }
 
-func detectLocalIPv4() string {
-	conn, err := net.DialTimeout("udp", "8.8.8.8:80", 400*time.Millisecond)
-	if err == nil {
-		defer conn.Close()
-		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok && addr.IP != nil && !addr.IP.IsLoopback() {
-			if v4 := addr.IP.To4(); v4 != nil {
-				return v4.String()
+func getLocalSubnetPrefixes(preferredIP string) []string {
+	var prefixes []string
+	seen := make(map[string]bool)
+
+	addPrefix := func(ip net.IP) {
+		if ip == nil || ip.IsLoopback() {
+			return
+		}
+		v4 := ip.To4()
+		if v4 == nil || v4.IsLoopback() {
+			return
+		}
+		pfx := fmt.Sprintf("%d.%d.%d.", v4[0], v4[1], v4[2])
+		if !seen[pfx] {
+			seen[pfx] = true
+			prefixes = append(prefixes, pfx)
+		}
+	}
+
+	// 1. Check preferred IP if passed
+	if preferredIP != "" {
+		addPrefix(net.ParseIP(preferredIP))
+	}
+
+	// 2. Enumerate all active network interfaces
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok {
+				addPrefix(ipnet.IP)
 			}
 		}
 	}
-	return "127.0.0.1"
+
+	// 3. UDP routing probes (queries kernel routing table without transmitting packets)
+	probeTargets := []string{"8.8.8.8:80", "1.1.1.1:80", "192.168.0.1:80", "192.168.1.1:80"}
+	for _, t := range probeTargets {
+		conn, err := net.DialTimeout("udp", t, 300*time.Millisecond)
+		if err == nil {
+			if uAddr, ok := conn.LocalAddr().(*net.UDPAddr); ok && uAddr.IP != nil {
+				addPrefix(uAddr.IP)
+			}
+			_ = conn.Close()
+		}
+	}
+
+	// 4. Default fallback: 192.168.0. and 192.168.1.
+	if len(prefixes) == 0 {
+		prefixes = append(prefixes, "192.168.0.", "192.168.1.")
+	}
+
+	return prefixes
 }

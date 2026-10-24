@@ -177,6 +177,7 @@ func main() {
 
 	// Step 7: HTTP API & Embedded Web Dashboard
 	apiServer := api.NewServer(cfg, casStore, manifestStore, fastcdc, f2fsOpt, routingTable, gossipEngine, hub, androidInfo)
+	apiServer.SetLocalAddr(localAddr)
 	mux := http.NewServeMux()
 	apiServer.RegisterRoutes(mux)
 

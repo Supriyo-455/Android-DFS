@@ -34,6 +34,12 @@ type Server struct {
 	androidInfo  resilience.AndroidInfo
 	startTime    time.Time
 	httpClient   *http.Client
+	localAddr    string
+}
+
+// SetLocalAddr configures the reachable cluster address for status responses.
+func (s *Server) SetLocalAddr(addr string) {
+	s.localAddr = addr
 }
 
 // NewServer builds an API server instance.
@@ -100,11 +106,19 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	sysMetrics := resilience.GetSystemMetrics(s.cfg.DataDir)
 	files := s.manifests.ListFiles()
 
+	advertisedAddr := s.localAddr
+	if advertisedAddr == "" {
+		advertisedAddr = r.Host
+	}
+	if advertisedAddr == "" {
+		advertisedAddr = s.cfg.HTTPAddr
+	}
+
 	response := map[string]interface{}{
 		"node_id":            s.cfg.NodeID,
 		"node_name":          s.cfg.NodeName,
 		"cluster_name":       s.cfg.ClusterName,
-		"http_addr":          s.cfg.HTTPAddr,
+		"http_addr":          advertisedAddr,
 		"uptime_seconds":     int64(time.Since(s.startTime).Seconds()),
 		"merkle_root":        tree.RootHash(),
 		"cas_stats":          casStats,

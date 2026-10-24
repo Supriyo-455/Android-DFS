@@ -86,6 +86,7 @@ func NewDesktopServer(dataDir string) (*DesktopServer, error) {
 
 // RegisterRoutes sets up REST endpoints for the desktop cloud portal.
 func (ds *DesktopServer) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/status", ds.handleStatus)
 	mux.HandleFunc("/api/cluster/status", ds.handleClusterStatus)
 	mux.HandleFunc("/api/cluster/phones/add", ds.handleAddPhone)
 	mux.HandleFunc("/api/cluster/phones/remove", ds.handleRemovePhone)
@@ -94,6 +95,15 @@ func (ds *DesktopServer) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/files/download/", ds.handleFileDownload)
 	mux.HandleFunc("/api/files/download", ds.handleFileDownload)
 	mux.HandleFunc("/api/files/delete", ds.handleFileDelete)
+}
+
+func (ds *DesktopServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"node_id":   "desktop-controller",
+		"node_name": "Desktop Client",
+		"http_addr": r.Host,
+	})
 }
 
 // AddPhone registers an Android phone IP address into the cluster.
