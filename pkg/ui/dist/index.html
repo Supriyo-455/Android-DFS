@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MobileDFS | Android Distributed Storage System</title>
+  <style>
+    :root {
+      --bg-base: #0b0f19;
+      --bg-surface: #111827;
+      --bg-card: rgba(17, 24, 39, 0.95);
+      --border: rgba(55, 65, 81, 0.7);
+      --border-accent: rgba(59, 130, 246, 0.3);
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --text: #f9fafb;
+      --text-muted: #9ca3af;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-base);
+      color: var(--text);
+      font-family: var(--font-sans);
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Top Navigation Bar */
+    header {
+      background-color: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-icon {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #3b82f6, #10b981);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .brand-subtitle {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(16, 185, 129, 0.12);
+      color: var(--success);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: currentColor;
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      max-width: 1300px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    /* Metric Cards Grid */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 16px;
+    }
+
+    .metric-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .metric-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .metric-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--text);
+      font-family: var(--font-mono);
+    }
+
+    .metric-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* Split Sections */
+    .dashboard-layout {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 24px;
+    }
+
+    @media (max-width: 900px) {
+      .dashboard-layout {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-title {
+      font-size: 15px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-body {
+      padding: 20px;
+    }
+
+    /* Tables */
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      text-align: left;
+    }
+
+    .data-table th {
+      padding: 10px 14px;
+      background: rgba(255, 255, 255, 0.02);
+      color: var(--text-muted);
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .data-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .data-table tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .hash-badge {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: #93c5fd;
+      background: rgba(59, 130, 246, 0.12);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      background: var(--primary);
+      color: #fff;
+    }
+
+    .btn:hover {
+      background: var(--primary-hover);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.06);
+      border-color: var(--border);
+      color: var(--text);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .btn-sm {
+      padding: 4px 8px;
+      font-size: 11px;
+    }
+
+    /* Ingestion File / Text Area */
+    .upload-area {
+      border: 2px dashed var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      text-align: center;
+      background: rgba(255, 255, 255, 0.01);
+      margin-bottom: 16px;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+
+    .upload-area:hover {
+      border-color: var(--primary);
+    }
+
+    textarea {
+      width: 100%;
+      background: #080d19;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      color: #fff;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      resize: vertical;
+      margin-bottom: 12px;
+    }
+
+    /* FastCDC Chunks Inspector */
+    .chunk-list {
+      max-height: 240px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #080d19;
+    }
+
+    .chunk-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .tag-new {
+      color: var(--success);
+      background: rgba(16, 185, 129, 0.1);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .tag-dedup {
+      color: var(--warning);
+      background: rgba(245, 158, 11, 0.1);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    /* Live Telemetry Feed */
+    .log-feed {
+      height: 280px;
+      overflow-y: auto;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 12px;
+      background: #080d19;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .log-entry {
+      display: flex;
+      gap: 8px;
+    }
+
+    .log-time {
+      color: var(--text-muted);
+    }
+
+    .log-type {
+      font-weight: 700;
+    }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--bg-surface);
+      border: 1px solid var(--primary);
+      padding: 12px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+      opacity: 0;
+      transform: translateY(10px);
+      transition: all 0.2s ease;
+      z-index: 100;
+      pointer-events: none;
+    }
+
+    #toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="brand-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+          <line x1="12" y1="18" x2="12.01" y2="18"/>
+        </svg>
+      </div>
+      <div>
+        <div class="brand-title">MobileDFS</div>
+        <div class="brand-subtitle">Android Distributed Storage System</div>
+      </div>
+    </div>
+
+    <div class="nav-actions">
+      <div class="badge">
+        <span class="status-dot"></span>
+        <span id="nav-cluster-status">MESH ONLINE</span>
+      </div>
+      <button class="btn btn-secondary btn-sm" id="btn-spawn-peer">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="16"/>
+          <line x1="8" y1="12" x2="16" y2="12"/>
+        </svg>
+        Simulate Peer
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Cluster Metrics Overview -->
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <span class="metric-label">Active Nodes</span>
+        <span class="metric-value" id="stat-nodes">1</span>
+        <span class="metric-sub" id="stat-nodes-sub">1 Local Host</span>
+      </div>
+
+      <div class="metric-card">
+        <span class="metric-label">CAS Unique Chunks</span>
+        <span class="metric-value" id="stat-chunks">0</span>
+        <span class="metric-sub" id="stat-stored-bytes">0 B Stored</span>
+      </div>
+
+      <div class="metric-card">
+        <span class="metric-label">Deduplication Ratio</span>
+        <span class="metric-value" style="color:var(--success);" id="stat-dedup">1.00x</span>
+        <span class="metric-sub" id="stat-saved-bytes">0 B Saved</span>
+      </div>
+
+      <div class="metric-card">
+        <span class="metric-label">F2FS Write Efficiency</span>
+        <span class="metric-value" style="color:#93c5fd;" id="stat-f2fs">1.02x</span>
+        <span class="metric-sub">Write Amplification Factor</span>
+      </div>
+
+      <div class="metric-card">
+        <span class="metric-label">Merkle Root Fingerprint</span>
+        <span class="metric-value hash-badge" style="font-size:13px;" id="stat-merkle">loading...</span>
+        <span class="metric-sub">CAS Anti-Entropy State</span>
+      </div>
+    </div>
+
+    <!-- Main Content Area -->
+    <div class="dashboard-layout">
+      <!-- Left Column: Node Mesh & Chunk Ingestion -->
+      <div style="display:flex; flex-direction:column; gap:24px;">
+        <!-- Mobile Node Mesh Table -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>
+                <path d="M2 12h20"/>
+              </svg>
+              Cluster Mesh Nodes
+            </div>
+            <button class="btn btn-secondary btn-sm" id="btn-refresh-nodes">Refresh Mesh</button>
+          </div>
+          <div class="card-body" style="padding:0;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Node</th>
+                  <th>Network Address</th>
+                  <th>Chunks</th>
+                  <th>Merkle Fingerprint</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="nodes-tbody">
+                <!-- Dynamically Populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- FastCDC File & Data Ingestion -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              FastCDC Content-Defined Ingestion & Deduplication
+            </div>
+            <span style="font-size:11px; color:var(--text-muted);">Gear Matrix Rolling Hash</span>
+          </div>
+          <div class="card-body">
+            <textarea id="ingest-input" rows="3" placeholder="Paste text or stream payload to test FastCDC chunking and CAS deduplication..."></textarea>
+            
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+              <button class="btn" id="btn-ingest">
+                Execute FastCDC Ingestion
+              </button>
+              <div id="ingest-stats" style="font-size:12px; color:var(--text-muted);"></div>
+            </div>
+
+            <div class="chunk-list" id="chunk-list-container">
+              <div style="padding:16px; text-align:center; color:var(--text-muted); font-size:12px;">
+                Ingest content above to inspect FastCDC chunk boundaries and SHA-256 CAS identifiers.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Android Environment & Live Logs -->
+      <div style="display:flex; flex-direction:column; gap:24px;">
+        <!-- Android Host Diagnostics -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+                <line x1="12" y1="18" x2="12.01" y2="18"/>
+              </svg>
+              Host System Diagnostics
+            </div>
+          </div>
+          <div class="card-body" style="display:flex; flex-direction:column; gap:12px; font-size:12px;">
+            <div style="display:flex; justify-content:space-between;">
+              <span style="color:var(--text-muted);">Platform:</span>
+              <strong id="diag-platform">Linux / Android</strong>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+              <span style="color:var(--text-muted);">Termux Runtime:</span>
+              <strong id="diag-termux" style="color:var(--success);">Active (POSIX Layer)</strong>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+              <span style="color:var(--text-muted);">Partial WakeLock:</span>
+              <strong id="diag-wakelock" style="color:var(--success);">Acquired (termux-wake-lock)</strong>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+              <span style="color:var(--text-muted);">Phantom Process Killer:</span>
+              <strong id="diag-phantom" style="color:var(--text);">Mitigated (Max 2147483647)</strong>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+              <span style="color:var(--text-muted);">Storage Filesystem:</span>
+              <strong id="diag-fs" style="color:var(--primary);">F2FS (Flash-Friendly)</strong>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+              <span style="color:var(--text-muted);">Node Uptime:</span>
+              <strong id="diag-uptime">0s</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Mesh Event Stream -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+              Live Mesh Telemetry
+            </div>
+            <span class="badge" style="font-size:10px;">WebSocket Stream</span>
+          </div>
+          <div class="log-feed" id="event-feed">
+            <div class="log-entry">
+              <span class="log-time">[00:00:00]</span>
+              <span class="log-type" style="color:var(--primary);">[SYSTEM]</span>
+              <span>MobileDFS dashboard initialized.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div id="toast">Notification</div>
+
+  <script>
+    class MobileDFSApp {
+      constructor() {
+        this.status = null;
+        this.peers = [];
+        this.ws = null;
+        this.init();
+      }
+
+      async init() {
+        this.bindEvents();
+        await this.loadStatus();
+        this.connectWebSocket();
+        setInterval(() => this.loadStatus(), 6000);
+      }
+
+      bindEvents() {
+        document.getElementById('btn-refresh-nodes').addEventListener('click', () => this.loadStatus());
+        document.getElementById('btn-ingest').addEventListener('click', () => this.executeIngest());
+        document.getElementById('btn-spawn-peer').addEventListener('click', () => this.spawnSimulatedPeer());
+      }
+
+      async loadStatus() {
+        try {
+          const res = await fetch('/api/status');
+          const data = await res.json();
+          this.status = data;
+
+          // Update Metrics
+          document.getElementById('stat-chunks').innerText = data.cas_stats.unique_chunks.toLocaleString();
+          document.getElementById('stat-stored-bytes').innerText = this.formatBytes(data.cas_stats.stored_bytes) + ' Stored';
+          document.getElementById('stat-dedup').innerText = data.cas_stats.dedup_ratio.toFixed(2) + 'x';
+          document.getElementById('stat-saved-bytes').innerText = this.formatBytes(data.cas_stats.saved_bytes) + ' Saved';
+          document.getElementById('stat-f2fs').innerText = data.f2fs_stats.estimated_write_amp.toFixed(2) + 'x';
+          document.getElementById('stat-merkle').innerText = data.merkle_root.slice(0, 16) + '...';
+          document.getElementById('stat-merkle').title = data.merkle_root;
+
+          // Update System Diagnostics
+          document.getElementById('diag-platform').innerText = data.android_info.is_android ? `Android (v${data.android_info.android_version || '14+'})` : 'Linux / Development';
+          document.getElementById('diag-termux').innerText = data.android_info.is_termux ? 'Active (POSIX Layer)' : 'Host System';
+          document.getElementById('diag-fs').innerText = data.android_info.filesystem_type.toUpperCase();
+          document.getElementById('diag-uptime').innerText = `${Math.floor(data.uptime_seconds / 60)}m ${data.uptime_seconds % 60}s`;
+
+          // Load Peers
+          const pRes = await fetch('/api/nodes');
+          this.peers = await pRes.json();
+          this.renderNodesTable();
+        } catch (err) {
+          console.error("Status load failed:", err);
+        }
+      }
+
+      renderNodesTable() {
+        const tbody = document.getElementById('nodes-tbody');
+        let html = '';
+
+        // Add Local Host Node
+        if (this.status) {
+          html += `
+            <tr>
+              <td>
+                <div style="font-weight:700;">${this.status.node_name}</div>
+                <div style="font-size:11px; color:var(--text-muted);">${this.status.node_id}</div>
+              </td>
+              <td style="font-family:var(--font-mono);">${this.status.http_addr}</td>
+              <td style="font-weight:600;">${this.status.cas_stats.total_chunks}</td>
+              <td><span class="hash-badge">${this.status.merkle_root.slice(0, 12)}...</span></td>
+              <td><span class="badge" style="font-size:10px;"><span class="status-dot"></span> LOCAL HOST</span></td>
+              <td><button class="btn btn-secondary btn-sm" disabled>Host</button></td>
+            </tr>
+          `;
+        }
+
+        // Add Connected Peers
+        if (Array.isArray(this.peers)) {
+          for (const p of this.peers) {
+            html += `
+              <tr>
+                <td>
+                  <div style="font-weight:700;">${p.name || p.id}</div>
+                  <div style="font-size:11px; color:var(--text-muted);">${p.id}</div>
+                </td>
+                <td style="font-family:var(--font-mono);">${p.http_addr || 'UDP-Mesh'}</td>
+                <td style="font-weight:600;">${p.total_chunks || 0}</td>
+                <td><span class="hash-badge">${(p.merkle_root || '00000000').slice(0, 12)}...</span></td>
+                <td><span class="badge" style="font-size:10px;"><span class="status-dot"></span> ${p.status.toUpperCase()}</span></td>
+                <td>
+                  <button class="btn btn-secondary btn-sm" onclick="window.DFS.triggerSync('${p.id}')">
+                    Re-Sync
+                  </button>
+                </td>
+              </tr>
+            `;
+          }
+        }
+
+        tbody.innerHTML = html;
+        const total = 1 + (this.peers ? this.peers.length : 0);
+        document.getElementById('stat-nodes').innerText = total;
+        document.getElementById('stat-nodes-sub').innerText = `1 Host + ${total - 1} Edge Peers`;
+      }
+
+      async triggerSync(targetId) {
+        this.logEvent('SYNC', `Triggering Merkle anti-entropy reconciliation with ${targetId}...`, '#3b82f6');
+        try {
+          const res = await fetch('/api/nodes/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_id: targetId })
+          });
+          const data = await res.json();
+          this.showToast(data.message);
+          this.loadStatus();
+        } catch (e) {
+          this.showToast("Sync request failed: " + e.message);
+        }
+      }
+
+      spawnSimulatedPeer() {
+        const id = 'edge-' + Math.random().toString(36).substring(2, 7);
+        const p = {
+          id: id,
+          name: `Pixel-Node-${id.slice(-3).toUpperCase()}`,
+          http_addr: `192.168.1.${Math.floor(Math.random() * 200 + 20)}:8080`,
+          status: 'active',
+          total_chunks: Math.floor(Math.random() * 40 + 5),
+          stored_bytes: 1024 * 1024 * 2,
+          merkle_root: '9f8b7a6c' + Math.random().toString(16).substring(2, 10)
+        };
+        this.peers.push(p);
+        this.renderNodesTable();
+        this.logEvent('DISCOVERY', `UDP Multicast discovered new mobile peer: ${p.name} (${p.http_addr})`, '#10b981');
+        this.showToast(`Peer ${p.name} joined cluster mesh`);
+      }
+
+      async executeIngest() {
+        const input = document.getElementById('ingest-input').value;
+        if (!input) {
+          this.showToast("Please enter text or data to ingest.");
+          return
+        }
+
+        const container = document.getElementById('chunk-list-container');
+        container.innerHTML = '<div style="padding:16px; text-align:center; color:var(--primary); font-size:12px;">Running FastCDC Gear Matrix Rolling Hash...</div>';
+
+        try {
+          const res = await fetch('/api/upload', {
+            method: 'POST',
+            body: input
+          });
+          const data = await res.json();
+
+          document.getElementById('ingest-stats').innerText = 
+            `Ingested ${data.file_size} B into ${data.chunks_generated} chunks (${data.unique_chunks} new, ${data.dedup_chunks} dedup hits)`;
+
+          let html = '';
+          for (const c of data.chunks) {
+            html += `
+              <div class="chunk-item">
+                <span class="hash-badge">${c.hash.slice(0, 20)}...</span>
+                <span>Offset: ${c.offset} | Len: ${c.length}B</span>
+                <span class="${c.is_new ? 'tag-new' : 'tag-dedup'}">${c.is_new ? 'NEW CHUNK' : 'DEDUP HIT'}</span>
+              </div>
+            `;
+          }
+          container.innerHTML = html;
+
+          this.logEvent('STORAGE', `FastCDC chunked payload into ${data.chunks_generated} CAS blocks (Root: ${data.new_merkle_root.slice(0, 10)}...)`, '#10b981');
+          this.showToast(`Stored ${data.chunks_generated} chunks into CAS`);
+          this.loadStatus();
+        } catch (e) {
+          container.innerHTML = `<div style="padding:16px; color:var(--danger); font-size:12px;">Error: ${e.message}</div>`;
+        }
+      }
+
+      connectWebSocket() {
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${proto}//${window.location.host}/ws`;
+
+        this.ws = new WebSocket(wsUrl);
+        this.ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            this.handleClusterEvent(msg);
+          } catch (e) {}
+        };
+
+        this.ws.onclose = () => {
+          setTimeout(() => this.connectWebSocket(), 3000);
+        };
+      }
+
+      handleClusterEvent(event) {
+        if (event.type === 'peer_joined') {
+          this.logEvent('GOSSIP', `Peer joined mesh: ${event.source_node}`, '#10b981');
+          this.loadStatus();
+        } else if (event.type === 'sync_start') {
+          this.logEvent('ENTROPY', `Anti-entropy reconciliation started: ${event.source_node} <-> ${event.target_node}`, '#f59e0b');
+        } else if (event.type === 'sync_complete') {
+          this.logEvent('ENTROPY', `Anti-entropy reconciliation completed: ${event.source_node} synchronized`, '#10b981');
+          this.loadStatus();
+        } else if (event.type === 'chunk_stored') {
+          this.logEvent('CAS', `${event.data.chunks_count} chunks stored. New Merkle root: ${event.data.merkle_root.slice(0, 12)}...`, '#93c5fd');
+          this.loadStatus();
+        }
+      }
+
+      logEvent(type, text, color = '#f9fafb') {
+        const feed = document.getElementById('event-feed');
+        const now = new Date();
+        const timeStr = `[${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}]`;
+
+        const entry = document.createElement('div');
+        entry.className = 'log-entry';
+        entry.innerHTML = `
+          <span class="log-time">${timeStr}</span>
+          <span class="log-type" style="color:${color};">[${type}]</span>
+          <span>${text}</span>
+        `;
+
+        feed.appendChild(entry);
+        feed.scrollTop = feed.scrollHeight;
+      }
+
+      formatBytes(bytes) {
+        if (!bytes || bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+      }
+
+      showToast(msg) {
+        const toast = document.getElementById('toast');
+        toast.innerText = msg;
+        toast.classList.add('show');
+        clearTimeout(this._toastTimer);
+        this._toastTimer = setTimeout(() => toast.classList.remove('show'), 2500);
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      window.DFS = new MobileDFSApp();
+    });
+  </script>
+</body>
+</html>
