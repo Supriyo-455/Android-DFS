@@ -571,8 +571,8 @@
           document.getElementById('hero-battery-pct').innerText = `${c.avg_battery_pct}%`;
           document.getElementById('hero-battery-bar').style.width = `${c.avg_battery_pct}%`;
         } else {
-          document.getElementById('hero-battery-pct').innerText = '100%';
-          document.getElementById('hero-battery-bar').style.width = '100%';
+          document.getElementById('hero-battery-pct').innerText = '--%';
+          document.getElementById('hero-battery-bar').style.width = '0%';
         }
       }
 
@@ -600,8 +600,8 @@
           const ramPct = (m.ram_usage_pct || 0).toFixed(1);
 
           const cpuPct = (m.cpu_usage_pct || 0).toFixed(1);
-          const batteryVal = m.battery_pct > 0 ? `${m.battery_pct}%` : '100%';
-          const batteryStat = m.battery_status || 'Active';
+          const batteryVal = m.battery_pct > 0 ? `${m.battery_pct}%` : (m.battery_status || 'Sensor Restricted');
+          const batteryStat = m.battery_pct > 0 ? (m.battery_status || 'Active') : 'Hardware API';
 
           const statusBadge = p.online 
             ? `<span class="badge"><span style="width:6px; height:6px; border-radius:50%; background:currentColor;"></span> ONLINE (${p.latency_ms}ms)</span>`

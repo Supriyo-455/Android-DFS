@@ -86,6 +86,9 @@ func main() {
 	initialTree := entropy.NewMerkleTree(hashes)
 	log.Printf("[STORAGE] CAS initialized at %s (%d existing chunks). Root: %s", cfg.DataDir, len(hashes), initialTree.RootHash())
 
+	// Start background hardware telemetry collector
+	resilience.StartMetricsCollector(cfg.DataDir)
+
 	// Step 4: Routing Table & Real-Time Event Hub
 	eventChannel := make(chan gossip.ClusterEvent, 100)
 	routingTable := gossip.NewRoutingTable(cfg.NodeID, 15*time.Second, eventChannel)

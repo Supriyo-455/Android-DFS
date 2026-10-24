@@ -143,22 +143,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	f2fsStats := s.f2fs.GetStats()
 	peers := s.routingTable.GetPeers()
 	files := s.manifests.ListFiles()
-
-	// Strict 250ms guard on hardware metrics so /api/status NEVER hangs on any Android device
-	var sysMetrics resilience.SystemMetrics
-	metricsDone := make(chan struct{}, 1)
-	go func() {
-		sysMetrics = resilience.GetSystemMetrics(s.cfg.DataDir)
-		metricsDone <- struct{}{}
-	}()
-
-	select {
-	case <-metricsDone:
-	case <-time.After(250 * time.Millisecond):
-		sysMetrics.BatteryPct = 85
-		sysMetrics.BatteryStatus = "Discharging"
-		sysMetrics.CPUUsagePct = 4.2
-	}
+	sysMetrics := resilience.GetSystemMetrics(s.cfg.DataDir)
 
 	advertisedAddr := s.localAddr
 	if advertisedAddr == "" {

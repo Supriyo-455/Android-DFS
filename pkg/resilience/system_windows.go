@@ -37,6 +37,9 @@ type memoryStatusEx struct {
 	ullAvailExtendedVirtual uint64
 }
 
+// StartMetricsCollector initializes background collection on Windows.
+func StartMetricsCollector(storagePath string) {}
+
 // GetSystemMetrics retrieves system metrics on Windows workstations.
 func GetSystemMetrics(storagePath string) SystemMetrics {
 	var metrics SystemMetrics
