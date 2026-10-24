@@ -126,10 +126,14 @@ func main() {
 		}()
 	}
 
-	// Step 6: UDP Multicast Peer Discovery (with SO_REUSEADDR & SO_REUSEPORT)
+	// Step 6: HTTP API & Embedded Web Dashboard
+	apiServer := api.NewServer(cfg, casStore, manifestStore, fastcdc, f2fsOpt, routingTable, gossipEngine, hub, androidInfo)
+	apiServer.SetLocalAddr(localAddr)
+
 	announcement := discovery.PeerAnnouncement{
 		NodeID:      cfg.NodeID,
 		NodeName:    cfg.NodeName,
+		Role:        "slave",
 		HTTPAddr:    localAddr,
 		GossipPort:  cfg.GossipPort,
 		MerkleRoot:  initialTree.RootHash(),
@@ -139,27 +143,54 @@ func main() {
 		Timestamp:   time.Now(),
 	}
 
-	// Step 6: Zero-Configuration Autonomous Peer Discovery (Multicast + Subnet Scan)
+	// Step 7: Zero-Configuration Autonomous Discovery (Multicast + Subnet Scan)
+	// Master-Slave Architecture:
+	// - Android phones run as storage slave workers.
+	// - The desktop client acts as the central master orchestrator.
 	handleDiscoveredPeer := func(p discovery.PeerAnnouncement) {
 		if p.Leaving {
 			routingTable.RemovePeer(p.NodeID)
-		} else {
-			routingTable.Upsert(gossip.PeerNode{
-				ID:          p.NodeID,
-				Name:        p.NodeName,
-				HTTPAddr:    p.HTTPAddr,
-				GossipPort:  p.GossipPort,
-				MerkleRoot:  p.MerkleRoot,
-				TotalChunks: p.TotalChunks,
-				StoredBytes: p.StoredBytes,
-				IsAndroid:   p.IsAndroid,
-				Status:      gossip.StatusActive,
-				LastSeen:    time.Now(),
-			})
-			go func(addr string) {
-				_ = gossipEngine.ConnectPeer(addr)
-			}(p.HTTPAddr)
+			return
 		}
+
+		// Check if discovered node is the Desktop Master Controller
+		if p.Role == "master" || p.NodeID == "desktop-controller" {
+			log.Printf("[AUTODISCOVERY] Recognized Desktop Master Controller at %s", p.HTTPAddr)
+			apiServer.SetMasterAddr(p.HTTPAddr)
+
+			// Register this phone as an active storage slave node with the Desktop Master
+			go func(masterAddr string) {
+				regURL := fmt.Sprintf("http://%s/api/cluster/phones/add?addr=%s", masterAddr, localAddr)
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				req, err := http.NewRequestWithContext(ctx, "POST", regURL, nil)
+				if err == nil {
+					resp, err := http.DefaultClient.Do(req)
+					if err == nil {
+						_ = resp.Body.Close()
+						log.Printf("[FLEET] Registered storage slave node (%s) with Desktop Master (%s)", localAddr, masterAddr)
+					}
+				}
+			}(p.HTTPAddr)
+
+			// Desktop client is the master controller, NOT a storage slave peer!
+			// Do NOT add to routingTable; do NOT connect gossipEngine.
+			return
+		}
+
+		// Discovered a fellow phone storage slave:
+		routingTable.Upsert(gossip.PeerNode{
+			ID:          p.NodeID,
+			Name:        p.NodeName,
+			HTTPAddr:    p.HTTPAddr,
+			GossipPort:  p.GossipPort,
+			MerkleRoot:  p.MerkleRoot,
+			TotalChunks: p.TotalChunks,
+			StoredBytes: p.StoredBytes,
+			IsAndroid:   p.IsAndroid,
+			Status:      gossip.StatusActive,
+			LastSeen:    time.Now(),
+		})
 	}
 
 	multicast, err := discovery.NewMulticastDiscovery(cfg.MulticastAddr, announcement, handleDiscoveredPeer)
@@ -171,13 +202,10 @@ func main() {
 		}
 	}
 
-	// Autonomous Wi-Fi Subnet Scanner (discovers all DFS peers on LAN without command line addresses)
+	// Autonomous Wi-Fi Subnet Scanner (discovers Desktop Master and peers without manual IP configuration)
 	subnetScanner := discovery.NewSubnetScanner(cfg.NodeID, localIP, portStr, handleDiscoveredPeer)
 	subnetScanner.Start()
 
-	// Step 7: HTTP API & Embedded Web Dashboard
-	apiServer := api.NewServer(cfg, casStore, manifestStore, fastcdc, f2fsOpt, routingTable, gossipEngine, hub, androidInfo)
-	apiServer.SetLocalAddr(localAddr)
 	mux := http.NewServeMux()
 	apiServer.RegisterRoutes(mux)
 

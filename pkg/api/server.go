@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/android-dfs/storage-node/pkg/config"
@@ -35,11 +36,29 @@ type Server struct {
 	startTime    time.Time
 	httpClient   *http.Client
 	localAddr    string
+	masterAddr   string
+	masterOnline bool
+	masterMu     sync.RWMutex
 }
 
 // SetLocalAddr configures the reachable cluster address for status responses.
 func (s *Server) SetLocalAddr(addr string) {
 	s.localAddr = addr
+}
+
+// SetMasterAddr updates the designated Desktop Master Controller address.
+func (s *Server) SetMasterAddr(addr string) {
+	s.masterMu.Lock()
+	defer s.masterMu.Unlock()
+	s.masterAddr = addr
+	s.masterOnline = true
+}
+
+// GetMasterAddr returns the recorded Desktop Master Controller address and status.
+func (s *Server) GetMasterAddr() (string, bool) {
+	s.masterMu.RLock()
+	defer s.masterMu.RUnlock()
+	return s.masterAddr, s.masterOnline
 }
 
 // NewServer builds an API server instance.
@@ -74,6 +93,7 @@ func NewServer(
 // RegisterRoutes registers all API routes onto the given ServeMux.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/master/assign", s.handleMasterAssign)
 	mux.HandleFunc("/api/nodes", s.handleNodes)
 	mux.HandleFunc("/api/nodes/sync", s.handleForceSync)
 	mux.HandleFunc("/api/peers/add", s.handlePeerAdd)
@@ -90,6 +110,25 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/action/shutdown", s.handleShutdown)
 	mux.HandleFunc("/ws", s.hub.HandleWebSocket)
 	mux.HandleFunc("/api/events", s.hub.HandleSSE)
+}
+
+func (s *Server) handleMasterAssign(w http.ResponseWriter, r *http.Request) {
+	master := r.URL.Query().Get("master")
+	if master == "" {
+		master = r.URL.Query().Get("addr")
+	}
+	if master != "" {
+		s.SetMasterAddr(master)
+		log.Printf("[MASTER] Designated Desktop Master Controller: %s", master)
+	}
+	masterAddr, masterOnline := s.GetMasterAddr()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":        "ok",
+		"role":          "slave",
+		"master_addr":   masterAddr,
+		"master_online": masterOnline,
+	})
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -114,11 +153,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		advertisedAddr = s.cfg.HTTPAddr
 	}
 
+	masterAddr, masterOnline := s.GetMasterAddr()
+
 	response := map[string]interface{}{
 		"node_id":            s.cfg.NodeID,
 		"node_name":          s.cfg.NodeName,
+		"role":               "slave",
 		"cluster_name":       s.cfg.ClusterName,
 		"http_addr":          advertisedAddr,
+		"master_addr":        masterAddr,
+		"master_online":      masterOnline,
 		"uptime_seconds":     int64(time.Since(s.startTime).Seconds()),
 		"merkle_root":        tree.RootHash(),
 		"cas_stats":          casStats,
@@ -135,7 +179,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
-	peers := s.routingTable.GetPeers()
+	rawPeers := s.routingTable.GetPeers()
+	// Filter out desktop controller: only slave storage phones belong in the storage peer table!
+	peers := make([]gossip.PeerNode, 0, len(rawPeers))
+	for _, p := range rawPeers {
+		if p.ID != "desktop-controller" {
+			peers = append(peers, p)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(peers)
 }
@@ -181,6 +232,16 @@ func (s *Server) handlePeerAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.gossipEngine.ConnectPeer(payload.Addr); err != nil {
+		// If this is the master controller, register as master
+		if strings.Contains(err.Error(), "Desktop Master Controller") {
+			s.SetMasterAddr(payload.Addr)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status":  "ok",
+				"message": fmt.Sprintf("Connected to Desktop Master Controller at %s", payload.Addr),
+			})
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

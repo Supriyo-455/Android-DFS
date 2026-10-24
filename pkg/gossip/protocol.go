@@ -100,6 +100,7 @@ func (g *GossipEngine) ConnectPeer(addr string) error {
 	var status struct {
 		NodeID     string            `json:"node_id"`
 		NodeName   string            `json:"node_name"`
+		Role       string            `json:"role"`
 		MerkleRoot string            `json:"merkle_root"`
 		CASStats   storage.CASStats  `json:"cas_stats"`
 	}
@@ -109,6 +110,10 @@ func (g *GossipEngine) ConnectPeer(addr string) error {
 
 	if status.NodeID == g.nodeID {
 		return fmt.Errorf("cannot connect to self")
+	}
+
+	if status.NodeID == "desktop-controller" || status.Role == "master" {
+		return fmt.Errorf("node %s is Desktop Master Controller (not a storage peer)", addr)
 	}
 
 	peer := PeerNode{

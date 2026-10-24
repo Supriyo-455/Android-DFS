@@ -169,6 +169,7 @@ func (s *SubnetScanner) probeTarget(host, port string) {
 	var status struct {
 		NodeID      string `json:"node_id"`
 		NodeName    string `json:"node_name"`
+		Role        string `json:"role"`
 		HTTPAddr    string `json:"http_addr"`
 		MerkleRoot  string `json:"merkle_root"`
 		AndroidInfo struct {
@@ -188,10 +189,20 @@ func (s *SubnetScanner) probeTarget(host, port string) {
 		return // Ignore self
 	}
 
+	role := strings.ToLower(status.Role)
+	if role == "" {
+		if status.NodeID == "desktop-controller" {
+			role = "master"
+		} else {
+			role = "slave"
+		}
+	}
+
 	// ALWAYS use targetAddr: this is the verified reachable IP:Port that just answered!
 	ann := PeerAnnouncement{
 		NodeID:      status.NodeID,
 		NodeName:    status.NodeName,
+		Role:        role,
 		HTTPAddr:    targetAddr,
 		MerkleRoot:  status.MerkleRoot,
 		TotalChunks: status.CASStats.TotalChunks,

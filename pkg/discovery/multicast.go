@@ -14,6 +14,7 @@ import (
 type PeerAnnouncement struct {
 	NodeID      string    `json:"node_id"`
 	NodeName    string    `json:"node_name"`
+	Role        string    `json:"role,omitempty"` // "master" for desktop controller, "slave" for phone storage nodes
 	HTTPAddr    string    `json:"http_addr"`
 	GossipPort  int       `json:"gossip_port"`
 	MerkleRoot  string    `json:"merkle_root"`

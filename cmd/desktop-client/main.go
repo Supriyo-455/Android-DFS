@@ -56,7 +56,7 @@ func main() {
 
 	// Handler for discovered phone nodes
 	onPhoneDiscovered := func(p discovery.PeerAnnouncement) {
-		if !p.Leaving && p.HTTPAddr != "" && p.NodeID != "desktop-controller" {
+		if !p.Leaving && p.HTTPAddr != "" && p.NodeID != "desktop-controller" && p.Role != "master" {
 			server.AddPhone(p.HTTPAddr)
 		}
 	}
@@ -64,7 +64,8 @@ func main() {
 	// Layer 1 & 2: UDP Multicast & Broadcast Discovery
 	announcement := discovery.PeerAnnouncement{
 		NodeID:    "desktop-controller",
-		NodeName:  "Desktop Client",
+		NodeName:  "Desktop Master Controller",
+		Role:      "master",
 		HTTPAddr:  port,
 		IsAndroid: false,
 		Timestamp: time.Now(),

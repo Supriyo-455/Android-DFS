@@ -454,18 +454,14 @@
     </div>
 
     <div class="nav-actions">
-      <div class="badge">
-        <span class="status-dot"></span>
-        <span id="nav-cluster-status">MESH ONLINE</span>
+      <div class="badge" style="background:rgba(59,130,246,0.15); color:#60a5fa; border:1px solid rgba(59,130,246,0.3);">
+        <span class="status-dot" style="background:#60a5fa;"></span>
+        <span>ROLE: STORAGE SLAVE</span>
       </div>
-      <button class="btn btn-secondary btn-sm" id="btn-spawn-peer">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/>
-          <line x1="12" y1="8" x2="12" y2="16"/>
-          <line x1="8" y1="12" x2="16" y2="12"/>
-        </svg>
-        Simulate Peer
-      </button>
+      <div class="badge" id="nav-master-badge" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.3);">
+        <span class="status-dot"></span>
+        <span id="nav-master-status">MASTER: SEARCHING...</span>
+      </div>
     </div>
   </header>
 
@@ -473,9 +469,9 @@
     <!-- Cluster Metrics Overview -->
     <div class="metrics-grid">
       <div class="metric-card">
-        <span class="metric-label">Active Nodes</span>
+        <span class="metric-label">Storage Slave Nodes</span>
         <span class="metric-value" id="stat-nodes">1</span>
-        <span class="metric-sub" id="stat-nodes-sub">1 Local Host</span>
+        <span class="metric-sub" id="stat-nodes-sub">1 Local Storage Slave</span>
       </div>
 
       <div class="metric-card">
@@ -555,7 +551,7 @@
                 <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>
                 <path d="M2 12h20"/>
               </svg>
-              Cluster Mesh Nodes
+              Storage Slave Nodes in Fleet
             </div>
             <div style="display:flex; gap:8px;">
               <button class="btn btn-sm" id="btn-add-peer-ip">
@@ -563,9 +559,9 @@
                   <line x1="12" y1="5" x2="12" y2="19"></line>
                   <line x1="5" y1="12" x2="19" y2="12"></line>
                 </svg>
-                Connect Peer IP
+                Connect Slave IP
               </button>
-              <button class="btn btn-secondary btn-sm" id="btn-refresh-nodes">Refresh Mesh</button>
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-nodes">Refresh Slaves</button>
             </div>
           </div>
           <div class="card-body" style="padding:0;">
@@ -931,6 +927,23 @@
             document.getElementById('diag-uptime').innerText = `${Math.floor(data.uptime_seconds / 60)}m ${data.uptime_seconds % 60}s`;
           }
 
+          // Master Controller status badge
+          const masterStatusEl = document.getElementById('nav-master-status');
+          const masterBadgeEl = document.getElementById('nav-master-badge');
+          if (masterStatusEl && masterBadgeEl) {
+            if (data.master_addr) {
+              masterStatusEl.innerText = `MASTER: ${data.master_addr}`;
+              masterBadgeEl.style.background = 'rgba(16,185,129,0.15)';
+              masterBadgeEl.style.color = '#34d399';
+              masterBadgeEl.style.borderColor = 'rgba(16,185,129,0.3)';
+            } else {
+              masterStatusEl.innerText = 'MASTER: SEARCHING...';
+              masterBadgeEl.style.background = 'rgba(245,158,11,0.15)';
+              masterBadgeEl.style.color = '#fbbf24';
+              masterBadgeEl.style.borderColor = 'rgba(245,158,11,0.3)';
+            }
+          }
+
           // Update local node in table
           this.renderNodesTable();
         } catch (err) {
@@ -1091,7 +1104,7 @@
         const tbody = document.getElementById('nodes-tbody');
         let html = '';
 
-        // Add Local Host Node
+        // Add Local Slave Node (this Android phone)
         const hostName = (this.status && this.status.node_name) || "Local Android Node";
         const hostId = (this.status && this.status.node_id) || "Host Daemon";
         const hostAddr = (this.status && this.status.http_addr) || window.location.host;
@@ -1107,24 +1120,30 @@
             <td style="font-family:var(--font-mono);">${hostAddr}</td>
             <td style="font-weight:600;">${totalChunks}</td>
             <td><span class="hash-badge">${merkle.slice(0, 12)}...</span></td>
-            <td><span class="badge" style="font-size:10px;"><span class="status-dot"></span> LOCAL HOST</span></td>
-            <td><button class="btn btn-secondary btn-sm" disabled>Host</button></td>
+            <td><span class="badge" style="font-size:10px; background:rgba(59,130,246,0.15); color:#60a5fa; border:1px solid rgba(59,130,246,0.3);"><span class="status-dot" style="background:#60a5fa;"></span> THIS SLAVE</span></td>
+            <td><button class="btn btn-secondary btn-sm" disabled>Local Node</button></td>
           </tr>
         `;
 
-        // Add Connected Peers
+        // Add Fellow Slave Storage Nodes
+        // CRITICAL: Desktop Client is Master Controller - never display it as a storage node!
+        let slavePeersCount = 0;
         if (Array.isArray(this.peers)) {
           for (const p of this.peers) {
+            if (p.id === 'desktop-controller' || p.role === 'master' || (p.http_addr && p.http_addr.endsWith(':9000'))) {
+              continue; // Skip master controller
+            }
+            slavePeersCount++;
             html += `
               <tr>
                 <td>
                   <div style="font-weight:700;">${p.name || p.id}</div>
                   <div style="font-size:11px; color:var(--text-muted);">${p.id}</div>
                 </td>
-                <td style="font-family:var(--font-mono);">${p.http_addr || 'UDP-Mesh'}</td>
+                <td style="font-family:var(--font-mono);">${p.http_addr || 'LAN-Mesh'}</td>
                 <td style="font-weight:600;">${p.total_chunks || 0}</td>
                 <td><span class="hash-badge">${(p.merkle_root || '00000000').slice(0, 12)}...</span></td>
-                <td><span class="badge" style="font-size:10px;"><span class="status-dot"></span> ${p.status.toUpperCase()}</span></td>
+                <td><span class="badge" style="font-size:10px;"><span class="status-dot"></span> SLAVE PEER</span></td>
                 <td>
                   <button class="btn btn-secondary btn-sm" onclick="window.DFS.triggerSync('${p.id}')">
                     Re-Sync
@@ -1136,9 +1155,9 @@
         }
 
         tbody.innerHTML = html;
-        const total = 1 + (this.peers ? this.peers.length : 0);
+        const total = 1 + slavePeersCount;
         document.getElementById('stat-nodes').innerText = total;
-        document.getElementById('stat-nodes-sub').innerText = `1 Host + ${total - 1} Edge Peers`;
+        document.getElementById('stat-nodes-sub').innerText = total === 1 ? '1 Local Storage Slave' : `${total} Phone Storage Slaves`;
       }
 
       async triggerSync(targetId) {

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/android-dfs/storage-node/pkg/resilience"
@@ -22,6 +23,7 @@ import (
 type PhoneNode struct {
 	ID          string                   `json:"id"`
 	Name        string                   `json:"name"`
+	Role        string                   `json:"role"`
 	Addr        string                   `json:"addr"` // e.g. 192.168.0.110:8080
 	Online      bool                     `json:"online"`
 	LastSeen    time.Time                `json:"last_seen"`
@@ -61,6 +63,7 @@ type DesktopServer struct {
 	httpClient *http.Client
 	ctx        context.Context
 	cancel     context.CancelFunc
+	uploadRR   uint64
 }
 
 // NewDesktopServer initializes the desktop cloud controller.
@@ -95,13 +98,24 @@ func (ds *DesktopServer) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/files/download/", ds.handleFileDownload)
 	mux.HandleFunc("/api/files/download", ds.handleFileDownload)
 	mux.HandleFunc("/api/files/delete", ds.handleFileDelete)
+
+	// Gossip compatibility stub
+	mux.HandleFunc("/api/gossip", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"role":    "master",
+			"node_id": "desktop-controller",
+			"status":  "ok",
+		})
+	})
 }
 
 func (ds *DesktopServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"node_id":   "desktop-controller",
-		"node_name": "Desktop Client",
+		"node_name": "Desktop Master Controller",
+		"role":      "master",
 		"http_addr": r.Host,
 	})
 }
@@ -191,6 +205,7 @@ func (ds *DesktopServer) pollSinglePhone(addr string) {
 	var payload struct {
 		NodeID           string                   `json:"node_id"`
 		NodeName         string                   `json:"node_name"`
+		Role             string                   `json:"role"`
 		MerkleRoot       string                   `json:"merkle_root"`
 		AndroidInfo      resilience.AndroidInfo   `json:"android_info"`
 		SystemMetrics    resilience.SystemMetrics `json:"system_metrics"`
@@ -207,6 +222,7 @@ func (ds *DesktopServer) pollSinglePhone(addr string) {
 	if exists {
 		p.ID = payload.NodeID
 		p.Name = payload.NodeName
+		p.Role = "slave"
 		p.Online = true
 		p.LastSeen = time.Now()
 		p.Metrics = payload.SystemMetrics
@@ -360,6 +376,39 @@ func (ds *DesktopServer) handleRemovePhone(w http.ResponseWriter, r *http.Reques
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "removed", "addr": req.Addr})
 }
 
+// pickBalancedTargetPhone chooses the online phone with the minimum stored chunks and bytes.
+// If multiple phones are tied, it round-robins across them so no phone remains idle.
+func (ds *DesktopServer) pickBalancedTargetPhone(onlinePhones []*PhoneNode) *PhoneNode {
+	if len(onlinePhones) == 0 {
+		return nil
+	}
+	if len(onlinePhones) == 1 {
+		return onlinePhones[0]
+	}
+
+	ds.phonesMu.RLock()
+	defer ds.phonesMu.RUnlock()
+
+	var best *PhoneNode
+	minScore := int64(1<<62 - 1)
+
+	for _, p := range onlinePhones {
+		// Calculate workload score (prioritizing chunk count first, then total stored bytes)
+		score := p.TotalChunks*1000000 + p.StoredBytes
+		if score < minScore {
+			minScore = score
+			best = p
+		}
+	}
+
+	if best == nil {
+		idx := atomic.AddUint64(&ds.uploadRR, 1) % uint64(len(onlinePhones))
+		return onlinePhones[idx]
+	}
+
+	return best
+}
+
 func (ds *DesktopServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost && r.Method != http.MethodPut {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -405,10 +454,13 @@ func (ds *DesktopServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	var uniqueCount int
 	var dedupCount int
 
-	// Stripe chunks round-robin across all online phones
-	for i, chunk := range chunks {
+	// Dynamic least-loaded striping across all online phone slaves
+	for _, chunk := range chunks {
 		chunkHashes = append(chunkHashes, chunk.Hash)
-		targetPhone := onlinePhones[i%len(onlinePhones)]
+		targetPhone := ds.pickBalancedTargetPhone(onlinePhones)
+		if targetPhone == nil {
+			targetPhone = onlinePhones[0]
+		}
 
 		isNew, err := ds.putChunkToPhone(targetPhone.Addr, chunk.Hash, chunk.Data)
 		if err != nil {
@@ -429,6 +481,14 @@ func (ds *DesktopServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+
+		// Update in-memory load stats immediately so subsequent chunks/uploads balance accurately
+		ds.phonesMu.Lock()
+		if p, ok := ds.phones[targetPhone.Addr]; ok {
+			p.TotalChunks++
+			p.StoredBytes += int64(len(chunk.Data))
+		}
+		ds.phonesMu.Unlock()
 
 		chunkHosts[chunk.Hash] = targetPhone.Addr
 

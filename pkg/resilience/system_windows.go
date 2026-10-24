@@ -10,10 +10,20 @@ import (
 )
 
 var (
-	kernel32            = syscall.NewLazyDLL("kernel32.dll")
-	getDiskFreeSpaceEx  = kernel32.NewProc("GetDiskFreeSpaceExW")
+	kernel32             = syscall.NewLazyDLL("kernel32.dll")
+	getDiskFreeSpaceEx   = kernel32.NewProc("GetDiskFreeSpaceExW")
 	globalMemoryStatusEx = kernel32.NewProc("GlobalMemoryStatusEx")
+	getSystemPowerStatus = kernel32.NewProc("GetSystemPowerStatus")
 )
+
+type systemPowerStatus struct {
+	ACLineStatus        byte
+	BatteryFlag         byte
+	BatteryLifePercent  byte
+	SystemStatusFlag    byte
+	BatteryLifeTime     uint32
+	BatteryFullLifeTime uint32
+}
 
 type memoryStatusEx struct {
 	cbSize                  uint32
@@ -81,6 +91,27 @@ func GetSystemMetrics(storagePath string) SystemMetrics {
 		cpu = 95.0
 	}
 	metrics.CPUUsagePct = cpu
+
+	// 4. Battery Level via GetSystemPowerStatus
+	var sps systemPowerStatus
+	ret, _, _ := getSystemPowerStatus.Call(uintptr(unsafe.Pointer(&sps)))
+	if ret != 0 {
+		if sps.BatteryLifePercent <= 100 {
+			metrics.BatteryPct = int(sps.BatteryLifePercent)
+			if sps.ACLineStatus == 1 {
+				metrics.BatteryStatus = "Charging (AC)"
+			} else {
+				metrics.BatteryStatus = "Discharging"
+			}
+		} else {
+			// AC Power or desktop workstation without battery
+			metrics.BatteryPct = 100
+			metrics.BatteryStatus = "AC Power (Workstation)"
+		}
+	} else {
+		metrics.BatteryPct = 100
+		metrics.BatteryStatus = "AC Power"
+	}
 
 	return metrics
 }

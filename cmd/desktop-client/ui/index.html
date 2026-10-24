@@ -580,8 +580,9 @@
         const container = document.getElementById('phones-container');
         if (!Array.isArray(phones) || phones.length === 0) {
           container.innerHTML = `
-            <div style="padding:24px; text-align:center; color:var(--text-muted); grid-column:1/-1;">
-              No phones connected yet. Click "+ Connect Phone IP" to register Phone 1 (e.g. 192.168.0.110:8080) and Phone 2.
+            <div style="padding:28px; text-align:center; color:var(--text-muted); grid-column:1/-1;">
+              <div style="font-size:14px; font-weight:600; color:var(--text); margin-bottom:6px;">Searching for Android Storage Nodes...</div>
+              <div style="font-size:12px;">Autonomous discovery is actively sweeping the local Wi-Fi subnet. Ensure <code>storage-node</code> is running on your phones. You can also click "+ Connect Phone IP" to register directly.</div>
             </div>
           `;
           return;
