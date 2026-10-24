@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 type Server struct {
 	cfg          *config.Config
 	cas          *storage.ContentAddressableStore
+	manifests    *storage.ManifestStore
 	fastcdc      *storage.FastCDC
 	f2fs         *storage.F2FSOptimizer
 	routingTable *gossip.RoutingTable
@@ -34,6 +37,7 @@ type Server struct {
 func NewServer(
 	cfg *config.Config,
 	cas *storage.ContentAddressableStore,
+	manifests *storage.ManifestStore,
 	fastcdc *storage.FastCDC,
 	f2fs *storage.F2FSOptimizer,
 	rt *gossip.RoutingTable,
@@ -44,6 +48,7 @@ func NewServer(
 	return &Server{
 		cfg:          cfg,
 		cas:          cas,
+		manifests:    manifests,
 		fastcdc:      fastcdc,
 		f2fs:         f2fs,
 		routingTable: rt,
@@ -61,6 +66,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/nodes/sync", s.handleForceSync)
 	mux.HandleFunc("/api/gossip", s.handleGossip)
 	mux.HandleFunc("/api/upload", s.handleUpload)
+	mux.HandleFunc("/api/files", s.handleFiles)
+	mux.HandleFunc("/api/files/download", s.handleFileDownload)
+	mux.HandleFunc("/api/files/download/", s.handleFileDownload)
 	mux.HandleFunc("/api/chunks/list", s.handleChunksList)
 	mux.HandleFunc("/api/chunks/", s.handleChunkGet)
 	mux.HandleFunc("/api/action/shutdown", s.handleShutdown)
@@ -79,19 +87,23 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	casStats := s.cas.Stats()
 	f2fsStats := s.f2fs.GetStats()
 	peers := s.routingTable.GetPeers()
+	sysMetrics := resilience.GetSystemMetrics(s.cfg.DataDir)
+	files := s.manifests.ListFiles()
 
 	response := map[string]interface{}{
-		"node_id":          s.cfg.NodeID,
-		"node_name":        s.cfg.NodeName,
-		"cluster_name":     s.cfg.ClusterName,
-		"http_addr":        s.cfg.HTTPAddr,
-		"uptime_seconds":   int64(time.Since(s.startTime).Seconds()),
-		"merkle_root":      tree.RootHash(),
-		"cas_stats":        casStats,
-		"f2fs_stats":       f2fsStats,
-		"android_info":     s.androidInfo,
-		"active_peers":     len(peers),
-		"timestamp":        time.Now().Unix(),
+		"node_id":            s.cfg.NodeID,
+		"node_name":          s.cfg.NodeName,
+		"cluster_name":       s.cfg.ClusterName,
+		"http_addr":          s.cfg.HTTPAddr,
+		"uptime_seconds":     int64(time.Since(s.startTime).Seconds()),
+		"merkle_root":        tree.RootHash(),
+		"cas_stats":          casStats,
+		"f2fs_stats":         f2fsStats,
+		"android_info":       s.androidInfo,
+		"system_metrics":     sysMetrics,
+		"active_peers":       len(peers),
+		"stored_files_count": len(files),
+		"timestamp":          time.Now().Unix(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -190,14 +202,26 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine filename
+	filename := r.URL.Query().Get("filename")
+	if filename == "" {
+		filename = r.Header.Get("X-Filename")
+	}
+	if filename == "" {
+		filename = fmt.Sprintf("file_%s.bin", time.Now().Format("20060102_150405"))
+	}
+
 	// Perform FastCDC Content-Defined Chunking
 	chunks := s.fastcdc.ChunkBuffer(bodyBytes)
 
 	var newChunksCount int
 	var dedupChunksCount int
 	chunkSummaries := make([]map[string]interface{}, 0, len(chunks))
+	chunkHashes := make([]string, 0, len(chunks))
 
 	for _, chunk := range chunks {
+		chunkHashes = append(chunkHashes, chunk.Hash)
+
 		// Store in CAS
 		isNew, err := s.cas.Put(chunk.Hash, chunk.Data)
 		if err != nil {
@@ -222,6 +246,17 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Register file manifest for full retrieval and reassembly
+	fileRec := storage.FileRecord{
+		ID:          storage.ComputeSHA256(bodyBytes),
+		Filename:    filename,
+		Size:        int64(len(bodyBytes)),
+		ChunkHashes: chunkHashes,
+		UploadTime:  time.Now(),
+		ContentType: http.DetectContentType(bodyBytes),
+	}
+	_ = s.manifests.RegisterFile(fileRec)
+
 	hashes, _ := s.cas.ListHashes()
 	newTree := entropy.NewMerkleTree(hashes)
 
@@ -230,6 +265,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		Type:       "chunk_stored",
 		SourceNode: s.cfg.NodeID,
 		Data: map[string]interface{}{
+			"filename":     filename,
 			"chunks_count": len(chunks),
 			"new_chunks":   newChunksCount,
 			"dedup_chunks": dedupChunksCount,
@@ -241,6 +277,8 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	response := map[string]interface{}{
 		"status":           "success",
+		"file_id":          fileRec.ID,
+		"filename":         filename,
 		"file_size":        len(bodyBytes),
 		"chunks_generated": len(chunks),
 		"unique_chunks":    newChunksCount,
@@ -251,6 +289,58 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	files := s.manifests.ListFiles()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(files)
+}
+
+func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		id = r.URL.Query().Get("name")
+	}
+	if id == "" {
+		parts := strings.Split(r.URL.Path, "/api/files/download/")
+		if len(parts) >= 2 && parts[1] != "" {
+			id = parts[1]
+		}
+	}
+
+	if id == "" {
+		http.Error(w, "Missing file id or name parameter", http.StatusBadRequest)
+		return
+	}
+
+	rec, exists := s.manifests.GetFile(id)
+	if !exists {
+		http.Error(w, "File not found in cluster manifest store", http.StatusNotFound)
+		return
+	}
+
+	cleanFilename := filepath.Base(rec.Filename)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, cleanFilename))
+	if rec.ContentType != "" {
+		w.Header().Set("Content-Type", rec.ContentType)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(rec.Size, 10))
+
+	if err := s.manifests.ReassembleFile(id, s.cas, w); err != nil {
+		log.Printf("[DOWNLOAD] Error reassembling file %s: %v", id, err)
+	}
 }
 
 func (s *Server) handleChunksList(w http.ResponseWriter, r *http.Request) {

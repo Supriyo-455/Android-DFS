@@ -67,6 +67,11 @@ func main() {
 		log.Fatalf("[FATAL] Failed to initialize CAS storage engine: %v", err)
 	}
 
+	manifestStore, err := storage.NewManifestStore(cfg.DataDir)
+	if err != nil {
+		log.Fatalf("[FATAL] Failed to initialize file manifest store: %v", err)
+	}
+
 	fastcdc := storage.NewFastCDC(cfg.CDCMinSize, cfg.CDCAvgSize, cfg.CDCMaxSize, cfg.CDCNormalization)
 	f2fsOpt := storage.NewF2FSOptimizer(cfg.F2FSOptimized)
 
@@ -133,7 +138,7 @@ func main() {
 	}
 
 	// Step 7: HTTP API & Embedded Web Dashboard
-	apiServer := api.NewServer(cfg, casStore, fastcdc, f2fsOpt, routingTable, gossipEngine, hub, androidInfo)
+	apiServer := api.NewServer(cfg, casStore, manifestStore, fastcdc, f2fsOpt, routingTable, gossipEngine, hub, androidInfo)
 	mux := http.NewServeMux()
 	apiServer.RegisterRoutes(mux)
 
