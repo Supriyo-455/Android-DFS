@@ -17,13 +17,14 @@ var (
 
 // FileRecord represents an intact file assembled from FastCDC Content-Addressable chunks.
 type FileRecord struct {
-	ID          string    `json:"id"`
-	Filename    string    `json:"filename"`
-	Size        int64     `json:"size"`
-	ChunkCount  int       `json:"chunk_count"`
-	ChunkHashes []string  `json:"chunk_hashes"`
-	UploadTime  time.Time `json:"upload_time"`
-	ContentType string    `json:"content_type"`
+	ID          string            `json:"id"`
+	Filename    string            `json:"filename"`
+	Size        int64             `json:"size"`
+	ChunkCount  int               `json:"chunk_count"`
+	ChunkHashes []string          `json:"chunk_hashes"`
+	ChunkHosts  map[string]string `json:"chunk_hosts,omitempty"`
+	UploadTime  time.Time         `json:"upload_time"`
+	ContentType string            `json:"content_type"`
 }
 
 // ManifestStore manages metadata for files uploaded into the distributed CAS store.
@@ -120,15 +121,15 @@ func (m *ManifestStore) ListFiles() []FileRecord {
 	return list
 }
 
-// ReassembleFile streams the original file by reading its constituent CAS chunks in sequential order.
-func (m *ManifestStore) ReassembleFile(identifier string, cas *ContentAddressableStore, w io.Writer) error {
+// ReassembleStream streams the original file by reading its constituent CAS chunks using a custom chunk supplier.
+func (m *ManifestStore) ReassembleStream(identifier string, fetchChunk func(hash string) ([]byte, error), w io.Writer) error {
 	rec, exists := m.GetFile(identifier)
 	if !exists {
 		return ErrFileNotFound
 	}
 
 	for _, hash := range rec.ChunkHashes {
-		chunkData, err := cas.Get(hash)
+		chunkData, err := fetchChunk(hash)
 		if err != nil {
 			return fmt.Errorf("missing chunk %s during file reassembly: %w", hash, err)
 		}
@@ -139,6 +140,11 @@ func (m *ManifestStore) ReassembleFile(identifier string, cas *ContentAddressabl
 	}
 
 	return nil
+}
+
+// ReassembleFile streams the original file by reading its constituent CAS chunks in sequential order from local CAS.
+func (m *ManifestStore) ReassembleFile(identifier string, cas *ContentAddressableStore, w io.Writer) error {
+	return m.ReassembleStream(identifier, cas.Get, w)
 }
 
 // DeleteFile removes a file manifest and prunes associated CAS chunks that are no longer used by any other file.

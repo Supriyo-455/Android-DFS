@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,6 +33,7 @@ type Server struct {
 	hub          *Hub
 	androidInfo  resilience.AndroidInfo
 	startTime    time.Time
+	httpClient   *http.Client
 }
 
 // NewServer builds an API server instance.
@@ -45,7 +48,7 @@ func NewServer(
 	hub *Hub,
 	androidInfo resilience.AndroidInfo,
 ) *Server {
-	return &Server{
+	srv := &Server{
 		cfg:          cfg,
 		cas:          cas,
 		manifests:    manifests,
@@ -56,7 +59,10 @@ func NewServer(
 		hub:          hub,
 		androidInfo:  androidInfo,
 		startTime:    time.Now(),
+		httpClient:   &http.Client{Timeout: 20 * time.Second},
 	}
+	srv.startPeriodicManifestSync()
+	return srv
 }
 
 // RegisterRoutes registers all API routes onto the given ServeMux.
@@ -72,7 +78,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/files/download", s.handleFileDownload)
 	mux.HandleFunc("/api/files/download/", s.handleFileDownload)
 	mux.HandleFunc("/api/chunks/list", s.handleChunksList)
+	mux.HandleFunc("/api/chunks/put", s.handleChunkPut)
 	mux.HandleFunc("/api/chunks/", s.handleChunkGet)
+	mux.HandleFunc("/api/manifests/sync", s.handleManifestSync)
 	mux.HandleFunc("/api/action/shutdown", s.handleShutdown)
 	mux.HandleFunc("/ws", s.hub.HandleWebSocket)
 	mux.HandleFunc("/api/events", s.hub.HandleSSE)
@@ -256,23 +264,60 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// Perform FastCDC Content-Defined Chunking
 	chunks := s.fastcdc.ChunkBuffer(bodyBytes)
 
+	// Identify active cluster peers for load balancing
+	var activePeers []gossip.PeerNode
+	for _, p := range s.routingTable.GetPeers() {
+		if p.HTTPAddr != "" && p.Status == gossip.StatusActive {
+			activePeers = append(activePeers, p)
+		}
+	}
+
+	numNodes := 1 + len(activePeers)
 	var newChunksCount int
 	var dedupChunksCount int
 	chunkSummaries := make([]map[string]interface{}, 0, len(chunks))
 	chunkHashes := make([]string, 0, len(chunks))
+	chunkHosts := make(map[string]string)
 
-	for _, chunk := range chunks {
+	for i, chunk := range chunks {
 		chunkHashes = append(chunkHashes, chunk.Hash)
+		targetIdx := i % numNodes
 
-		// Store in CAS
-		isNew, err := s.cas.Put(chunk.Hash, chunk.Data)
-		if err != nil {
-			log.Printf("[CAS] Error storing chunk %s: %v", chunk.Hash, err)
-			continue
+		var isNew bool
+		var targetNodeName string
+
+		if targetIdx == 0 {
+			// Store on local node
+			var err error
+			isNew, err = s.cas.Put(chunk.Hash, chunk.Data)
+			if err != nil {
+				log.Printf("[CAS] Error storing local chunk %s: %v", chunk.Hash, err)
+				continue
+			}
+			s.f2fs.RecordWrite(len(chunk.Data))
+			chunkHosts[chunk.Hash] = "local"
+			targetNodeName = s.cfg.NodeName
+		} else {
+			// Balance load: Store on remote peer phone
+			peer := activePeers[targetIdx-1]
+			var err error
+			isNew, err = s.storeChunkOnPeer(peer.HTTPAddr, chunk.Hash, chunk.Data)
+			if err != nil {
+				// Fallback to storing locally if remote peer network transfer encounters an error
+				log.Printf("[DISTRIBUTED] Peer %s write failed for chunk %s (%v), storing locally", peer.Name, chunk.Hash, err)
+				isNew, err = s.cas.Put(chunk.Hash, chunk.Data)
+				if err != nil {
+					log.Printf("[CAS] Fallback local store failed for chunk %s: %v", chunk.Hash, err)
+					continue
+				}
+				s.f2fs.RecordWrite(len(chunk.Data))
+				chunkHosts[chunk.Hash] = "local"
+				targetNodeName = s.cfg.NodeName
+			} else {
+				chunkHosts[chunk.Hash] = peer.HTTPAddr
+				targetNodeName = peer.Name
+			}
 		}
-
-		// Log F2FS flash alignment write
-		s.f2fs.RecordWrite(len(chunk.Data))
 
 		if isNew {
 			newChunksCount++
@@ -285,19 +330,25 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			"length": chunk.Length,
 			"hash":   chunk.Hash,
 			"is_new": isNew,
+			"node":   targetNodeName,
 		})
 	}
 
-	// Register file manifest for full retrieval and reassembly
+	// Register file manifest for full cluster retrieval and reassembly
 	fileRec := storage.FileRecord{
 		ID:          storage.ComputeSHA256(bodyBytes),
 		Filename:    filename,
 		Size:        int64(len(bodyBytes)),
+		ChunkCount:  len(chunks),
 		ChunkHashes: chunkHashes,
+		ChunkHosts:  chunkHosts,
 		UploadTime:  time.Now(),
 		ContentType: http.DetectContentType(bodyBytes),
 	}
 	_ = s.manifests.RegisterFile(fileRec)
+
+	// Propagate file manifest to all cluster peers
+	go s.broadcastManifest(fileRec)
 
 	hashes, _ := s.cas.ListHashes()
 	newTree := entropy.NewMerkleTree(hashes)
@@ -383,6 +434,26 @@ func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Propagate deletion to cluster peers if requested
+	if r.URL.Query().Get("propagate") != "false" {
+		go func(fileId string) {
+			delPayload, _ := json.Marshal(map[string]string{"id": fileId})
+			for _, peer := range s.routingTable.GetPeers() {
+				if peer.HTTPAddr != "" && peer.Status == gossip.StatusActive {
+					delURL := fmt.Sprintf("http://%s/api/files/delete?id=%s&propagate=false", peer.HTTPAddr, fileId)
+					req, err := http.NewRequestWithContext(context.Background(), "POST", delURL, bytes.NewBuffer(delPayload))
+					if err == nil {
+						req.Header.Set("Content-Type", "application/json")
+						resp, err := s.httpClient.Do(req)
+						if err == nil {
+							resp.Body.Close()
+						}
+					}
+				}
+			}
+		}(req.ID)
+	}
+
 	hashes, _ := s.cas.ListHashes()
 	newTree := entropy.NewMerkleTree(hashes)
 
@@ -444,8 +515,36 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Length", strconv.FormatInt(rec.Size, 10))
 
-	if err := s.manifests.ReassembleFile(id, s.cas, w); err != nil {
-		log.Printf("[DOWNLOAD] Error reassembling file %s: %v", id, err)
+	// Reassemble file using cluster-aware chunk fetcher
+	chunkFetcher := func(chunkHash string) ([]byte, error) {
+		// 1. Check local CAS first
+		if data, err := s.cas.Get(chunkHash); err == nil {
+			return data, nil
+		}
+
+		// 2. If chunk location is recorded in manifest, fetch from that peer
+		if host, ok := rec.ChunkHosts[chunkHash]; ok && host != "" && host != "local" {
+			data, err := s.fetchChunkFromHost(host, chunkHash)
+			if err == nil {
+				return data, nil
+			}
+		}
+
+		// 3. Fallback: query all active peers
+		for _, peer := range s.routingTable.GetPeers() {
+			if peer.HTTPAddr != "" && peer.Status == gossip.StatusActive {
+				data, err := s.fetchChunkFromHost(peer.HTTPAddr, chunkHash)
+				if err == nil {
+					return data, nil
+				}
+			}
+		}
+
+		return nil, fmt.Errorf("chunk %s unavailable on local storage or connected peers", chunkHash)
+	}
+
+	if err := s.manifests.ReassembleStream(id, chunkFetcher, w); err != nil {
+		log.Printf("[DOWNLOAD] Error reassembling distributed file %s: %v", id, err)
 	}
 }
 
@@ -457,6 +556,186 @@ func (s *Server) handleChunksList(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(hashes)
+}
+
+func (s *Server) handleChunkPut(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodPut {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	hash := r.URL.Query().Get("hash")
+	if hash == "" {
+		hash = r.Header.Get("X-Chunk-Hash")
+	}
+
+	data, err := io.ReadAll(r.Body)
+	if err != nil || len(data) == 0 {
+		http.Error(w, "Empty or invalid chunk payload", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	if hash == "" {
+		hash = storage.ComputeSHA256(data)
+	}
+
+	isNew, err := s.cas.Put(hash, data)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("CAS store failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	s.f2fs.RecordWrite(len(data))
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"hash":   hash,
+		"is_new": isNew,
+		"size":   len(data),
+	})
+}
+
+func (s *Server) handleManifestSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var rec storage.FileRecord
+	if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_ = s.manifests.RegisterFile(rec)
+
+	s.hub.BroadcastEvent(gossip.ClusterEvent{
+		Type:       "manifest_synced",
+		SourceNode: s.cfg.NodeID,
+		Data: map[string]interface{}{
+			"file_id":  rec.ID,
+			"filename": rec.Filename,
+		},
+		Timestamp: time.Now(),
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "synced"})
+}
+
+func (s *Server) storeChunkOnPeer(peerAddr, hash string, data []byte) (bool, error) {
+	putURL := fmt.Sprintf("http://%s/api/chunks/put?hash=%s", peerAddr, hash)
+	req, err := http.NewRequestWithContext(context.Background(), "POST", putURL, bytes.NewReader(data))
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Chunk-Hash", hash)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("remote peer returned HTTP %d", resp.StatusCode)
+	}
+
+	var res struct {
+		IsNew bool `json:"is_new"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+	return res.IsNew, nil
+}
+
+func (s *Server) broadcastManifest(rec storage.FileRecord) {
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return
+	}
+	for _, peer := range s.routingTable.GetPeers() {
+		if peer.HTTPAddr != "" && peer.Status == gossip.StatusActive {
+			syncURL := fmt.Sprintf("http://%s/api/manifests/sync", peer.HTTPAddr)
+			req, err := http.NewRequestWithContext(context.Background(), "POST", syncURL, bytes.NewBuffer(data))
+			if err == nil {
+				req.Header.Set("Content-Type", "application/json")
+				resp, err := s.httpClient.Do(req)
+				if err == nil {
+					resp.Body.Close()
+				}
+			}
+		}
+	}
+}
+
+func (s *Server) fetchChunkFromHost(host, hash string) ([]byte, error) {
+	url := fmt.Sprintf("http://%s/api/chunks/%s", host, hash)
+	req, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("remote peer %s returned HTTP %d for chunk %s", host, resp.StatusCode, hash)
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+func (s *Server) syncManifestsFromPeer(peerAddr string) {
+	url := fmt.Sprintf("http://%s/api/files", peerAddr)
+	req, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
+	if err != nil {
+		return
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	var remoteFiles []storage.FileRecord
+	if err := json.NewDecoder(resp.Body).Decode(&remoteFiles); err != nil {
+		return
+	}
+
+	for _, rf := range remoteFiles {
+		if _, exists := s.manifests.GetFile(rf.ID); !exists {
+			_ = s.manifests.RegisterFile(rf)
+			s.hub.BroadcastEvent(gossip.ClusterEvent{
+				Type:       "manifest_synced",
+				SourceNode: s.cfg.NodeID,
+				Data: map[string]interface{}{
+					"file_id":  rf.ID,
+					"filename": rf.Filename,
+				},
+				Timestamp: time.Now(),
+			})
+		}
+	}
+}
+
+func (s *Server) startPeriodicManifestSync() {
+	ticker := time.NewTicker(12 * time.Second)
+	go func() {
+		for range ticker.C {
+			peers := s.routingTable.GetPeers()
+			for _, p := range peers {
+				if p.HTTPAddr != "" && p.Status == gossip.StatusActive {
+					s.syncManifestsFromPeer(p.HTTPAddr)
+				}
+			}
+		}
+	}()
 }
 
 func (s *Server) handleChunkGet(w http.ResponseWriter, r *http.Request) {

@@ -241,11 +241,9 @@ func (g *GossipEngine) sendGossipToPeer(peer PeerNode, msg GossipMessage, localT
 	peer.LatencyMs = latency
 	g.routingTable.Upsert(peer)
 
-	// Merkle Anti-Entropy Check:
-	// If root hashes differ, trigger targeted synchronization!
-	if remoteResp.MerkleRoot != "" && remoteResp.MerkleRoot != localTree.RootHash() {
-		g.triggerAntiEntropySync(peer)
-	}
+	// Merkle roots will naturally differ when chunks are load-balanced across multiple phones.
+	// We update the peer's root hash and stats in the routing table, but do not spam
+	// background reconciliation every 2 seconds. ForceSync can be invoked on demand.
 }
 
 // triggerAntiEntropySync performs cursor-based Merkle tree difference resolution.

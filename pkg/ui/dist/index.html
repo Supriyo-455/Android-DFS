@@ -835,11 +835,15 @@
 
           let html = '';
           for (const c of data.chunks) {
+            const nodeBadge = c.node ? `<span style="font-size:10px; color:#93c5fd; background:rgba(59,130,246,0.15); border:1px solid rgba(59,130,246,0.3); padding:2px 6px; border-radius:4px; margin-right:4px;">${c.node}</span>` : '';
             html += `
               <div class="chunk-item">
-                <span class="hash-badge">${c.hash.slice(0, 20)}...</span>
+                <span class="hash-badge">${c.hash.slice(0, 16)}...</span>
                 <span>Offset: ${c.offset} | Len: ${c.length}B</span>
-                <span class="${c.is_new ? 'tag-new' : 'tag-dedup'}">${c.is_new ? 'NEW CHUNK' : 'DEDUP HIT'}</span>
+                <div style="display:flex; align-items:center;">
+                  ${nodeBadge}
+                  <span class="${c.is_new ? 'tag-new' : 'tag-dedup'}">${c.is_new ? 'NEW CHUNK' : 'DEDUP HIT'}</span>
+                </div>
               </div>
             `;
           }
@@ -1074,7 +1078,11 @@
           const files = await res.json();
           const f = files.find(item => item.id === fileId);
           if (f) {
-            alert(`File: ${f.filename}\nSize: ${this.formatBytes(f.size)}\nTotal Chunks: ${f.chunk_count}\n\nFastCDC Chunk SHA-256 Hashes:\n` + f.chunk_hashes.join('\n'));
+            const lines = f.chunk_hashes.map((h, i) => {
+              const host = (f.chunk_hosts && f.chunk_hosts[h]) || 'local';
+              return `Chunk #${i+1}: ${h.slice(0, 16)}... -> ${host === 'local' ? 'Local Phone' : host}`;
+            });
+            alert(`File: ${f.filename}\nSize: ${this.formatBytes(f.size)}\nTotal Chunks: ${f.chunk_count}\n\nDistributed Placement:\n` + lines.join('\n'));
           }
         } catch (e) {}
       }
@@ -1188,11 +1196,15 @@
 
           let html = '';
           for (const c of data.chunks) {
+            const nodeBadge = c.node ? `<span style="font-size:10px; color:#93c5fd; background:rgba(59,130,246,0.15); border:1px solid rgba(59,130,246,0.3); padding:2px 6px; border-radius:4px; margin-right:4px;">${c.node}</span>` : '';
             html += `
               <div class="chunk-item">
-                <span class="hash-badge">${c.hash.slice(0, 20)}...</span>
+                <span class="hash-badge">${c.hash.slice(0, 16)}...</span>
                 <span>Offset: ${c.offset} | Len: ${c.length}B</span>
-                <span class="${c.is_new ? 'tag-new' : 'tag-dedup'}">${c.is_new ? 'NEW CHUNK' : 'DEDUP HIT'}</span>
+                <div style="display:flex; align-items:center;">
+                  ${nodeBadge}
+                  <span class="${c.is_new ? 'tag-new' : 'tag-dedup'}">${c.is_new ? 'NEW CHUNK' : 'DEDUP HIT'}</span>
+                </div>
               </div>
             `;
           }
