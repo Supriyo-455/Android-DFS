@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MobileDFS | Desktop Cloud Storage Controller</title>
+  <style>
+    :root {
+      --bg-base: #0a0e17;
+      --bg-surface: #111827;
+      --bg-card: rgba(17, 24, 39, 0.95);
+      --border: rgba(55, 65, 81, 0.6);
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --text: #f9fafb;
+      --text-muted: #9ca3af;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-base);
+      color: var(--text);
+      font-family: var(--font-sans);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 28px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-icon {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #3b82f6, #10b981);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+    }
+
+    .brand h1 { font-size: 18px; font-weight: 700; letter-spacing: -0.5px; }
+    .brand p { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .nav-actions { display: flex; align-items: center; gap: 10px; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      border: 1px solid transparent;
+      cursor: pointer;
+      background: var(--primary);
+      color: #fff;
+      transition: all 0.15s ease;
+    }
+    .btn:hover { background: var(--primary-hover); }
+    .btn-secondary { background: rgba(255,255,255,0.06); border-color: var(--border); color: var(--text); }
+    .btn-secondary:hover { background: rgba(255,255,255,0.12); }
+    .btn-danger { background: rgba(239, 68, 68, 0.15); border-color: rgba(239,68,68,0.3); color: #ef4444; }
+    .btn-danger:hover { background: #ef4444; color: #fff; }
+    .btn-sm { padding: 4px 10px; font-size: 11px; border-radius: 6px; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 600;
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .badge-offline { background: rgba(239, 68, 68, 0.15); color: var(--danger); border-color: rgba(239,68,68,0.3); }
+
+    main {
+      flex: 1;
+      max-width: 1400px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    /* Hero Combined Storage Grid */
+    .hero-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+    }
+
+    .hero-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .hero-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .hero-value {
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .progress-bar-bg {
+      width: 100%;
+      height: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 9999px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #10b981, #3b82f6);
+      border-radius: 9999px;
+      transition: width 0.3s ease;
+    }
+
+    /* Section Cards */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      padding: 16px 20px;
+      background: rgba(255, 255, 255, 0.02);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .card-title {
+      font-size: 15px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Phones Grid */
+    .phones-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 16px;
+      padding: 20px;
+    }
+
+    .phone-card {
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .phone-card:hover {
+      border-color: rgba(59, 130, 246, 0.4);
+    }
+
+    .phone-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .phone-title { font-weight: 700; font-size: 15px; }
+    .phone-sub { font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); }
+
+    .telemetry-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .meter-box {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .meter-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+    .meter-val { font-weight: 700; font-size: 13px; }
+
+    /* Upload Drag & Drop */
+    .upload-zone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 24px;
+      text-align: center;
+      cursor: pointer;
+      background: rgba(255, 255, 255, 0.01);
+      transition: all 0.2s ease;
+      margin: 20px;
+    }
+    .upload-zone:hover {
+      border-color: var(--primary);
+      background: rgba(59, 130, 246, 0.05);
+    }
+
+    /* Scrollable File Table */
+    .scroll-table-container {
+      max-height: 420px;
+      overflow-y: auto;
+      overflow-x: auto;
+    }
+    .scroll-table-container::-webkit-scrollbar { width: 6px; height: 6px; }
+    .scroll-table-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    table.file-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      text-align: left;
+    }
+    table.file-table th {
+      position: sticky;
+      top: 0;
+      background: var(--bg-surface);
+      z-index: 5;
+      padding: 12px 16px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border);
+    }
+    table.file-table td {
+      padding: 12px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+    table.file-table tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #1e293b;
+      color: #fff;
+      border: 1px solid var(--primary);
+      padding: 12px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+      display: none;
+      z-index: 100;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <div class="brand-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+        </svg>
+      </div>
+      <div>
+        <h1>MobileDFS Desktop Cloud</h1>
+        <p>Decentralized Android Edge Storage Mesh</p>
+      </div>
+    </div>
+    <div class="nav-actions">
+      <span class="badge" id="cluster-status-badge">
+        <span style="width:7px; height:7px; border-radius:50%; background:currentColor;"></span>
+        <span id="cluster-badge-text">Mesh Active</span>
+      </span>
+      <button class="btn btn-secondary btn-sm" onclick="promptAddPhone()">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+        + Connect Phone IP
+      </button>
+      <button class="btn btn-secondary btn-sm" onclick="window.DFS.refresh()">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M23 4v6h-6"></path>
+          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+        </svg>
+        Refresh
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Top Hero Metric Cards -->
+    <div class="hero-grid">
+      <!-- Combined Storage -->
+      <div class="hero-card">
+        <div class="hero-label">
+          <span>Combined Cloud Storage</span>
+          <span id="hero-storage-pct" class="badge">0% Used</span>
+        </div>
+        <div class="hero-value" id="hero-storage-free" style="color:var(--success);">0 GB Free</div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="hero-storage-bar" style="width:0%;"></div>
+        </div>
+        <div style="font-size:12px; color:var(--text-muted); display:flex; justify-content:space-between;">
+          <span id="hero-storage-used">0 GB Used</span>
+          <span id="hero-storage-total">Total: 0 GB</span>
+        </div>
+      </div>
+
+      <!-- Active Phone Fleet -->
+      <div class="hero-card">
+        <div class="hero-label">
+          <span>Phone Fleet Mesh</span>
+          <span class="badge" id="hero-phones-online">0 Online</span>
+        </div>
+        <div class="hero-value" id="hero-phones-count">0 Phones</div>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:auto;">
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+            <span>Total CAS Chunks:</span>
+            <strong id="hero-chunks-count" style="color:#fff;">0</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between;">
+            <span>Stored Payload:</span>
+            <strong id="hero-stored-bytes" style="color:#fff;">0 B</strong>
+          </div>
+        </div>
+      </div>
+
+      <!-- Fleet Average CPU & RAM -->
+      <div class="hero-card">
+        <div class="hero-label">
+          <span>Fleet Hardware Load</span>
+          <span id="hero-cpu-badge" class="badge">Idle</span>
+        </div>
+        <div style="display:flex; align-items:baseline; gap:8px;">
+          <div class="hero-value" id="hero-cpu-pct">0.0%</div>
+          <span style="font-size:12px; color:var(--text-muted);">Avg CPU</span>
+        </div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="hero-cpu-bar" style="width:0%;"></div>
+        </div>
+        <div style="font-size:12px; color:var(--text-muted); display:flex; justify-content:space-between;">
+          <span>Fleet RAM: <strong id="hero-ram-used" style="color:#fff;">0 GB</strong></span>
+          <span id="hero-ram-pct">0% Used</span>
+        </div>
+      </div>
+
+      <!-- Fleet Battery Power -->
+      <div class="hero-card">
+        <div class="hero-label">
+          <span>Fleet Battery Status</span>
+          <span class="badge" id="hero-battery-badge">Battery Health</span>
+        </div>
+        <div class="hero-value" id="hero-battery-pct" style="color:#38bdf8;">--%</div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="hero-battery-bar" style="background:#38bdf8; width:0%;"></div>
+        </div>
+        <div style="font-size:12px; color:var(--text-muted);" id="hero-battery-sub">
+          All phones operating normally
+        </div>
+      </div>
+    </div>
+
+    <!-- Connected Phone Fleet Cards -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
+            <line x1="12" y1="18" x2="12.01" y2="18"></line>
+          </svg>
+          Connected Android Nodes & Hardware Diagnostics
+        </div>
+        <span style="font-size:11px; color:var(--text-muted);" id="phones-summary-tag">Live telemetry stream</span>
+      </div>
+      <div class="phones-grid" id="phones-container">
+        <!-- Dynamically injected phone cards -->
+        <div style="padding:24px; text-align:center; color:var(--text-muted); grid-column:1/-1;">
+          No phones connected yet. Click "+ Connect Phone IP" to add Phone 1 (e.g. 192.168.0.110:8080) and Phone 2.
+        </div>
+      </div>
+    </div>
+
+    <!-- Personal Cloud Storage Drive -->
+    <div class="card">
+      <div class="card-header">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <div class="card-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+            </svg>
+            Personal Cloud Drive (Distributed Across Phones)
+          </div>
+          <span class="badge" id="files-count-badge">0 Files</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <input type="text" id="file-search-input" placeholder="Search files..." style="padding:4px 10px; font-size:12px; border-radius:6px; background:rgba(255,255,255,0.05); border:1px solid var(--border); color:#fff; width:160px;" oninput="window.DFS.filterFiles(this.value)">
+          <button class="btn btn-secondary btn-sm" onclick="window.DFS.loadFiles()">Refresh Files</button>
+        </div>
+      </div>
+
+      <!-- Drag & Drop Upload Zone -->
+      <input type="file" id="file-picker" style="display:none;" onchange="window.DFS.uploadFile(this.files[0])">
+      <div class="upload-zone" onclick="document.getElementById('file-picker').click()" id="drop-zone">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--primary); margin:0 auto 8px; display:block;">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="17 8 12 3 7 8"></polyline>
+          <line x1="12" y1="3" x2="12" y2="15"></line>
+        </svg>
+        <div style="font-weight:700; font-size:14px;">Click to Select File or Drag & Drop Here from your Desktop</div>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Files will be automatically chunked and striped evenly across all active phones</div>
+      </div>
+
+      <!-- Scrollable File Table -->
+      <div class="scroll-table-container">
+        <table class="file-table">
+          <thead>
+            <tr>
+              <th>Filename</th>
+              <th>Size</th>
+              <th>Chunks & Striping</th>
+              <th>Upload Date</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="files-tbody">
+            <tr>
+              <td colspan="5" style="text-align:center; color:var(--text-muted); padding:30px;">
+                No files uploaded yet. Drag & drop any file above to store it across your phone fleet!
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <div id="toast"></div>
+
+  <script>
+    class DesktopCloudApp {
+      constructor() {
+        this.status = null;
+        this.files = [];
+        this.init();
+      }
+
+      init() {
+        this.refresh();
+        setInterval(() => this.refresh(), 3000);
+
+        // Drag and drop setup
+        const dropZone = document.getElementById('drop-zone');
+        ['dragenter', 'dragover'].forEach(name => {
+          dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.style.borderColor = '#3b82f6'; });
+        });
+        ['dragleave', 'drop'].forEach(name => {
+          dropZone.addEventListener(name, (e) => { e.preventDefault(); dropZone.style.borderColor = 'var(--border)'; });
+        });
+        dropZone.addEventListener('drop', (e) => {
+          if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+            this.uploadFile(e.dataTransfer.files[0]);
+          }
+        });
+      }
+
+      async refresh() {
+        await Promise.all([this.loadStatus(), this.loadFiles()]);
+      }
+
+      async loadStatus() {
+        try {
+          const res = await fetch('/api/cluster/status');
+          if (!res.ok) return;
+          const data = await res.json();
+          this.status = data;
+          this.renderCombined(data.combined);
+          this.renderPhones(data.phones);
+        } catch (e) {
+          console.error("Status error:", e);
+        }
+      }
+
+      renderCombined(c) {
+        if (!c) return;
+
+        // Combined Storage
+        const freeStr = this.formatBytes(c.storage_free_bytes || 0);
+        const usedStr = this.formatBytes(c.storage_used_bytes || 0);
+        const totalStr = this.formatBytes(c.storage_total_bytes || 0);
+        const usedPct = c.storage_used_pct || 0;
+
+        document.getElementById('hero-storage-free').innerText = `${freeStr} Free`;
+        document.getElementById('hero-storage-used').innerText = `${usedStr} Used`;
+        document.getElementById('hero-storage-total').innerText = `Total: ${totalStr}`;
+        document.getElementById('hero-storage-bar').style.width = `${Math.min(usedPct, 100)}%`;
+        document.getElementById('hero-storage-pct').innerText = `${usedPct.toFixed(1)}% Used`;
+
+        // Phones Count
+        document.getElementById('hero-phones-count').innerText = `${c.total_phones} Phones`;
+        document.getElementById('hero-phones-online').innerText = `${c.online_phones} Online`;
+        document.getElementById('hero-chunks-count').innerText = (c.total_chunks || 0).toLocaleString();
+        document.getElementById('hero-stored-bytes').innerText = this.formatBytes(c.stored_bytes || 0);
+
+        // Fleet CPU
+        const cpuPct = (c.avg_cpu_pct || 0).toFixed(1);
+        document.getElementById('hero-cpu-pct').innerText = `${cpuPct}%`;
+        document.getElementById('hero-cpu-bar').style.width = `${Math.min(c.avg_cpu_pct || 0, 100)}%`;
+        document.getElementById('hero-cpu-badge').innerText = (c.avg_cpu_pct > 50) ? 'Busy' : 'Normal';
+
+        // Fleet RAM
+        const ramUsedStr = this.formatBytes(c.ram_used_bytes || 0);
+        const ramPct = (c.ram_usage_pct || 0).toFixed(0);
+        document.getElementById('hero-ram-used').innerText = ramUsedStr;
+        document.getElementById('hero-ram-pct').innerText = `${ramPct}% Used`;
+
+        // Fleet Battery
+        if (c.avg_battery_pct > 0) {
+          document.getElementById('hero-battery-pct').innerText = `${c.avg_battery_pct}%`;
+          document.getElementById('hero-battery-bar').style.width = `${c.avg_battery_pct}%`;
+        } else {
+          document.getElementById('hero-battery-pct').innerText = '100%';
+          document.getElementById('hero-battery-bar').style.width = '100%';
+        }
+      }
+
+      renderPhones(phones) {
+        const container = document.getElementById('phones-container');
+        if (!Array.isArray(phones) || phones.length === 0) {
+          container.innerHTML = `
+            <div style="padding:24px; text-align:center; color:var(--text-muted); grid-column:1/-1;">
+              No phones connected yet. Click "+ Connect Phone IP" to register Phone 1 (e.g. 192.168.0.110:8080) and Phone 2.
+            </div>
+          `;
+          return;
+        }
+
+        let html = '';
+        for (const p of phones) {
+          const m = p.metrics || {};
+          const storageFree = this.formatBytes(m.storage_free_bytes || 0);
+          const storageTotal = this.formatBytes(m.storage_total_bytes || 0);
+          const storagePct = (m.storage_used_pct || 0).toFixed(1);
+
+          const ramUsed = this.formatBytes(m.ram_used_bytes || 0);
+          const ramTotal = this.formatBytes(m.ram_total_bytes || 0);
+          const ramPct = (m.ram_usage_pct || 0).toFixed(1);
+
+          const cpuPct = (m.cpu_usage_pct || 0).toFixed(1);
+          const batteryVal = m.battery_pct > 0 ? `${m.battery_pct}%` : '100%';
+          const batteryStat = m.battery_status || 'Active';
+
+          const statusBadge = p.online 
+            ? `<span class="badge"><span style="width:6px; height:6px; border-radius:50%; background:currentColor;"></span> ONLINE (${p.latency_ms}ms)</span>`
+            : `<span class="badge badge-offline">OFFLINE</span>`;
+
+          html += `
+            <div class="phone-card">
+              <div class="phone-header">
+                <div>
+                  <div class="phone-title">${p.name || 'Android Device'}</div>
+                  <div class="phone-sub">${p.addr}</div>
+                </div>
+                ${statusBadge}
+              </div>
+
+              <div class="telemetry-row">
+                <!-- Battery -->
+                <div class="meter-box">
+                  <div class="meter-label">
+                    <span>Battery</span>
+                    <span style="font-size:10px; color:${m.battery_pct < 25 ? 'var(--danger)' : 'var(--success)'};">${batteryStat}</span>
+                  </div>
+                  <div class="meter-val" style="color:#38bdf8; display:flex; align-items:center; gap:6px;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="1" y="6" width="18" height="12" rx="2" ry="2"></rect>
+                      <line x1="23" y1="13" x2="23" y2="11"></line>
+                    </svg>
+                    ${batteryVal}
+                  </div>
+                </div>
+
+                <!-- CPU -->
+                <div class="meter-box">
+                  <div class="meter-label">
+                    <span>CPU Load</span>
+                    <span style="font-size:10px;">${cpuPct > 50 ? 'Active' : 'Idle'}</span>
+                  </div>
+                  <div class="meter-val" style="color:#a78bfa; display:flex; align-items:center; gap:6px;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect>
+                      <rect x="9" y="9" width="6" height="6"></rect>
+                    </svg>
+                    ${cpuPct}%
+                  </div>
+                </div>
+              </div>
+
+              <!-- Storage Remaining -->
+              <div class="meter-box">
+                <div class="meter-label">
+                  <span>Flash Storage Remaining</span>
+                  <span>${storagePct}% Used</span>
+                </div>
+                <div style="font-weight:700; font-size:13px; color:var(--success); margin-bottom:4px;">
+                  ${storageFree} Free <span style="font-weight:400; font-size:11px; color:var(--text-muted);">/ ${storageTotal}</span>
+                </div>
+                <div class="progress-bar-bg" style="height:5px;">
+                  <div class="progress-bar-fill" style="width:${Math.min(m.storage_used_pct || 0, 100)}%;"></div>
+                </div>
+              </div>
+
+              <!-- RAM Memory -->
+              <div class="meter-box">
+                <div class="meter-label">
+                  <span>RAM Memory</span>
+                  <span>${ramPct}% Used</span>
+                </div>
+                <div style="font-size:12px; font-weight:600; margin-bottom:4px;">
+                  ${ramUsed} <span style="color:var(--text-muted); font-size:11px;">/ ${ramTotal}</span>
+                </div>
+                <div class="progress-bar-bg" style="height:5px;">
+                  <div class="progress-bar-fill" style="background:#a78bfa; width:${Math.min(m.ram_usage_pct || 0, 100)}%;"></div>
+                </div>
+              </div>
+
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2px; font-size:11px; color:var(--text-muted);">
+                <span>Chunks Stored: <strong style="color:#fff;">${p.total_chunks || 0}</strong></span>
+                <button class="btn btn-secondary btn-sm" onclick="window.DFS.removePhone('${p.addr}')" style="padding:2px 8px; font-size:10px;">Remove</button>
+              </div>
+            </div>
+          `;
+        }
+        container.innerHTML = html;
+      }
+
+      async loadFiles() {
+        try {
+          const res = await fetch('/api/files');
+          if (!res.ok) return;
+          this.files = await res.json();
+          const filterInput = document.getElementById('file-search-input');
+          this.renderFiles(filterInput ? filterInput.value : '');
+        } catch (e) {
+          console.error("Files error:", e);
+        }
+      }
+
+      filterFiles(q) {
+        this.renderFiles(q);
+      }
+
+      renderFiles(query = '') {
+        const tbody = document.getElementById('files-tbody');
+        const countBadge = document.getElementById('files-count-badge');
+        const files = this.files || [];
+
+        if (countBadge) countBadge.innerText = `${files.length} Files`;
+
+        const q = (query || '').trim().toLowerCase();
+        const filtered = q === '' 
+          ? files 
+          : files.filter(f => (f.filename && f.filename.toLowerCase().includes(q)) || (f.id && f.id.toLowerCase().includes(q)));
+
+        if (filtered.length === 0) {
+          tbody.innerHTML = `
+            <tr>
+              <td colspan="5" style="text-align:center; color:var(--text-muted); padding:30px;">
+                ${files.length === 0 ? 'No files uploaded yet. Drag & drop any file above to store it across your phone fleet!' : 'No matching files found.'}
+              </td>
+            </tr>
+          `;
+          return;
+        }
+
+        let html = '';
+        for (const f of filtered) {
+          const dateStr = new Date(f.upload_time).toLocaleString();
+          const cleanName = (f.filename || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+          
+          // Calculate phone chunk split
+          let distribution = `${f.chunk_count} Chunks`;
+          if (f.chunk_hosts) {
+            const hostCounts = {};
+            for (const h of Object.values(f.chunk_hosts)) {
+              hostCounts[h] = (hostCounts[h] || 0) + 1;
+            }
+            const parts = Object.entries(hostCounts).map(([host, count]) => {
+              const label = host.includes(':') ? host.split(':')[0].replace('192.168.0.', '.') : host;
+              return `${label} (${count})`;
+            });
+            if (parts.length > 0) {
+              distribution = parts.join(' + ');
+            }
+          }
+
+          html += `
+            <tr>
+              <td>
+                <div style="font-weight:700; display:flex; align-items:center; gap:8px;">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--primary); flex-shrink:0;">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                  </svg>
+                  <span>${f.filename}</span>
+                </div>
+                <div style="font-size:10px; font-family:var(--font-mono); color:var(--text-muted); margin-left:24px;">${f.id.slice(0, 16)}...</div>
+              </td>
+              <td style="font-weight:600;">${this.formatBytes(f.size)}</td>
+              <td><span class="badge" style="font-size:11px;">${distribution}</span></td>
+              <td style="font-size:11px; color:var(--text-muted);">${dateStr}</td>
+              <td>
+                <div style="display:flex; gap:6px;">
+                  <button class="btn btn-sm" onclick="window.DFS.downloadFile('${f.id}')" title="Reassemble from phones to PC">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                      <polyline points="7 10 12 15 17 10"></polyline>
+                      <line x1="12" y1="15" x2="12" y2="3"></line>
+                    </svg>
+                    Download
+                  </button>
+                  <button class="btn btn-secondary btn-sm" onclick="window.DFS.inspectFile('${f.id}')">
+                    Inspect
+                  </button>
+                  <button class="btn btn-danger btn-sm" onclick="window.DFS.deleteFile('${f.id}', '${cleanName}')">
+                    Delete
+                  </button>
+                </div>
+              </td>
+            </tr>
+          `;
+        }
+        tbody.innerHTML = html;
+      }
+
+      async uploadFile(file) {
+        if (!file) return;
+        this.showToast(`FastCDC chunking & striping "${file.name}" across phones...`);
+
+        try {
+          const res = await fetch(`/api/upload?filename=${encodeURIComponent(file.name)}`, {
+            method: 'POST',
+            body: file
+          });
+          const data = await res.json();
+          if (res.ok) {
+            this.showToast(`Uploaded "${file.name}" into ${data.chunks_generated} chunks across ${data.target_phones} phones!`);
+            this.refresh();
+          } else {
+            alert(`Upload error: ${data.message || data.error || 'Check that phones are online'}`);
+          }
+        } catch (e) {
+          alert(`Upload failed: ${e.message}`);
+        }
+      }
+
+      downloadFile(id) {
+        this.showToast("Streaming and reassembling chunks from phone fleet...");
+        window.location.href = `/api/files/download/${id}`;
+      }
+
+      async deleteFile(id, name) {
+        if (!confirm(`Are you sure you want to delete "${name}" from all phones?`)) return;
+        try {
+          const res = await fetch('/api/files/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id })
+          });
+          if (res.ok) {
+            this.showToast(`Deleted "${name}" from cloud cluster`);
+            this.refresh();
+          }
+        } catch (e) {
+          alert(`Delete error: ${e.message}`);
+        }
+      }
+
+      async inspectFile(id) {
+        const f = this.files.find(item => item.id === id);
+        if (!f) return;
+        const lines = f.chunk_hashes.map((h, i) => {
+          const host = (f.chunk_hosts && f.chunk_hosts[h]) || 'Auto';
+          return `Chunk #${i+1}: ${h.slice(0, 16)}... -> Phone: ${host}`;
+        });
+        alert(`File: ${f.filename}\nSize: ${this.formatBytes(f.size)}\nTotal Chunks: ${f.chunk_count}\n\nChunk Striping Distribution:\n` + lines.join('\n'));
+      }
+
+      async removePhone(addr) {
+        if (!confirm(`Disconnect phone ${addr}?`)) return;
+        await fetch('/api/cluster/phones/remove', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ addr })
+        });
+        this.refresh();
+      }
+
+      formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+      }
+
+      showToast(msg) {
+        const t = document.getElementById('toast');
+        t.innerText = msg;
+        t.style.display = 'block';
+        setTimeout(() => { t.style.display = 'none'; }, 4000);
+      }
+    }
+
+    function promptAddPhone() {
+      const addr = prompt("Enter phone IP address and port (e.g. 192.168.0.110:8080):");
+      if (addr && addr.trim() !== "") {
+        fetch('/api/cluster/phones/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ addr: addr.trim() })
+        }).then(() => window.DFS.refresh());
+      }
+    }
+
+    window.DFS = new DesktopCloudApp();
+  </script>
+</body>
+</html>
