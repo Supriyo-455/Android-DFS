@@ -731,15 +731,30 @@
           const dateStr = new Date(f.upload_time).toLocaleString();
           const cleanName = (f.filename || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
           
-          // Calculate phone chunk split
+          // Calculate phone storage location
           let distribution = `${f.chunk_count} Chunks`;
+          let hostOnline = true;
           if (f.chunk_hosts) {
             const hostCounts = {};
             for (const h of Object.values(f.chunk_hosts)) {
               hostCounts[h] = (hostCounts[h] || 0) + 1;
             }
+
+            const phoneMap = {};
+            const onlineSet = new Set();
+            if (this.status && Array.isArray(this.status.phones)) {
+              for (const p of this.status.phones) {
+                phoneMap[p.addr] = p.name;
+                if (p.online) onlineSet.add(p.addr);
+              }
+            }
+
             const parts = Object.entries(hostCounts).map(([host, count]) => {
-              const label = host.includes(':') ? host.split(':')[0].replace('192.168.0.', '.') : host;
+              if (onlineSet.size > 0 && !onlineSet.has(host)) {
+                hostOnline = false;
+              }
+              const name = phoneMap[host];
+              const label = name ? name : (host.includes(':') ? host.split(':')[0].replace('192.168.0.', '.') : host);
               return `${label} (${count})`;
             });
             if (parts.length > 0) {
@@ -760,7 +775,7 @@
                 <div style="font-size:10px; font-family:var(--font-mono); color:var(--text-muted); margin-left:24px;">${f.id.slice(0, 16)}...</div>
               </td>
               <td style="font-weight:600;">${this.formatBytes(f.size)}</td>
-              <td><span class="badge" style="font-size:11px;">${distribution}</span></td>
+              <td><span class="${hostOnline ? 'badge' : 'badge badge-offline'}" style="font-size:11px;" title="${hostOnline ? 'Storage phone is online' : 'Storage phone is currently offline'}">${distribution}${!hostOnline ? ' (Offline)' : ''}</span></td>
               <td style="font-size:11px; color:var(--text-muted);">${dateStr}</td>
               <td>
                 <div style="display:flex; gap:6px;">

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -456,37 +457,60 @@ func (ds *DesktopServer) handleRemovePhone(w http.ResponseWriter, r *http.Reques
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "removed", "addr": req.Addr})
 }
 
-// pickBalancedTargetPhone chooses the online phone with the minimum stored chunks and bytes.
-// If multiple phones are tied, it round-robins across them so no phone remains idle.
-func (ds *DesktopServer) pickBalancedTargetPhone(onlinePhones []*PhoneNode) *PhoneNode {
-	if len(onlinePhones) == 0 {
-		return nil
-	}
-	if len(onlinePhones) == 1 {
-		return onlinePhones[0]
+// rankCandidatePhones ranks online phones so the phone with the lowest load (fewest stored chunks and bytes)
+// is prioritized first. When multiple phones have equal load, it round-robins across them so files are distributed evenly.
+func (ds *DesktopServer) rankCandidatePhones(onlinePhones []*PhoneNode) []*PhoneNode {
+	if len(onlinePhones) <= 1 {
+		return onlinePhones
 	}
 
 	ds.phonesMu.RLock()
-	defer ds.phonesMu.RUnlock()
-
-	var best *PhoneNode
-	minScore := int64(1<<62 - 1)
-
-	for _, p := range onlinePhones {
-		// Calculate workload score (prioritizing chunk count first, then total stored bytes)
+	type scoredPhone struct {
+		phone *PhoneNode
+		score int64
+	}
+	scored := make([]scoredPhone, len(onlinePhones))
+	for i, p := range onlinePhones {
+		// Workload score prioritizing chunks and stored bytes, factoring in storage percentage
 		score := p.TotalChunks*1000000 + p.StoredBytes
-		if score < minScore {
-			minScore = score
-			best = p
+		if p.Metrics.StorageUsedPct > 0 {
+			score += int64(p.Metrics.StorageUsedPct * 10000)
+		}
+		scored[i] = scoredPhone{phone: p, score: score}
+	}
+	ds.phonesMu.RUnlock()
+
+	// Sort by score ascending
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score < scored[j].score
+	})
+
+	// If top candidates are tied in score, rotate with uploadRR to balance files fairly
+	firstScore := scored[0].score
+	var tiedCount int
+	for _, sp := range scored {
+		if sp.score == firstScore {
+			tiedCount++
+		} else {
+			break
 		}
 	}
 
-	if best == nil {
-		idx := atomic.AddUint64(&ds.uploadRR, 1) % uint64(len(onlinePhones))
-		return onlinePhones[idx]
+	result := make([]*PhoneNode, len(onlinePhones))
+	if tiedCount > 1 {
+		offset := int(atomic.AddUint64(&ds.uploadRR, 1) % uint64(tiedCount))
+		for i := 0; i < tiedCount; i++ {
+			result[i] = scored[(i+offset)%tiedCount].phone
+		}
+		for i := tiedCount; i < len(scored); i++ {
+			result[i] = scored[i].phone
+		}
+	} else {
+		for i, sp := range scored {
+			result[i] = sp.phone
+		}
 	}
-
-	return best
+	return result
 }
 
 func (ds *DesktopServer) handleUpload(w http.ResponseWriter, r *http.Request) {
@@ -534,58 +558,69 @@ func (ds *DesktopServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	var uniqueCount int
 	var dedupCount int
 
-	// Dynamic least-loaded striping across all online phone slaves
-	for _, chunk := range chunks {
-		chunkHashes = append(chunkHashes, chunk.Hash)
-		targetPhone := ds.pickBalancedTargetPhone(onlinePhones)
-		if targetPhone == nil {
-			targetPhone = onlinePhones[0]
-		}
+	// Candidate phones ranked by load (least-loaded first)
+	candidates := ds.rankCandidatePhones(onlinePhones)
 
-		isNew, err := ds.putChunkToPhone(targetPhone.Addr, chunk.Hash, chunk.Data)
-		if err != nil {
-			// Try fallback to any other online phone
-			stored := false
-			for _, alt := range onlinePhones {
-				if alt.Addr != targetPhone.Addr {
-					if n, e := ds.putChunkToPhone(alt.Addr, chunk.Hash, chunk.Data); e == nil {
-						isNew = n
-						targetPhone = alt
-						stored = true
-						break
-					}
-				}
+	var targetPhone *PhoneNode
+	var lastErr error
+
+	// Store ALL chunks together on a single phone so that a file is NEVER split or fragmented across devices.
+	// When that phone leaves or joins the network, the entire file can be retrieved as long as that phone is present,
+	// without any dependency on other phones.
+	// If a candidate phone fails mid-upload, failover the entire file upload to the next candidate.
+	for _, candidate := range candidates {
+		var candidateSuccess bool = true
+		var candidateUnique int
+		var candidateDedup int
+		var tempSummaries []map[string]interface{}
+
+		for _, chunk := range chunks {
+			isNew, err := ds.putChunkToPhone(candidate.Addr, chunk.Hash, chunk.Data)
+			if err != nil {
+				lastErr = fmt.Errorf("phone %s failed on chunk %s: %w", candidate.Addr, chunk.Hash, err)
+				candidateSuccess = false
+				break
 			}
-			if !stored {
-				http.Error(w, fmt.Sprintf("Failed to store chunk %s across phones: %v", chunk.Hash, err), http.StatusInternalServerError)
-				return
+			if isNew {
+				candidateUnique++
+			} else {
+				candidateDedup++
 			}
+			tempSummaries = append(tempSummaries, map[string]interface{}{
+				"offset": chunk.Offset,
+				"length": chunk.Length,
+				"hash":   chunk.Hash,
+				"phone":  candidate.Name,
+				"is_new": isNew,
+			})
 		}
 
-		// Update in-memory load stats immediately so subsequent chunks/uploads balance accurately
-		ds.phonesMu.Lock()
-		if p, ok := ds.phones[targetPhone.Addr]; ok {
-			p.TotalChunks++
-			p.StoredBytes += int64(len(chunk.Data))
+		if candidateSuccess {
+			targetPhone = candidate
+			uniqueCount = candidateUnique
+			dedupCount = candidateDedup
+			chunkSummaries = tempSummaries
+
+			for _, chunk := range chunks {
+				chunkHashes = append(chunkHashes, chunk.Hash)
+				chunkHosts[chunk.Hash] = targetPhone.Addr
+			}
+			break
 		}
-		ds.phonesMu.Unlock()
-
-		chunkHosts[chunk.Hash] = targetPhone.Addr
-
-		if isNew {
-			uniqueCount++
-		} else {
-			dedupCount++
-		}
-
-		chunkSummaries = append(chunkSummaries, map[string]interface{}{
-			"offset": chunk.Offset,
-			"length": chunk.Length,
-			"hash":   chunk.Hash,
-			"phone":  targetPhone.Name,
-			"is_new": isNew,
-		})
 	}
+
+	if targetPhone == nil {
+		http.Error(w, fmt.Sprintf("Failed to store file chunks on any connected phone: %v", lastErr), http.StatusInternalServerError)
+		return
+	}
+
+	// Update in-memory load stats immediately so subsequent uploads balance accurately across phones
+	ds.phonesMu.Lock()
+	if p, ok := ds.phones[targetPhone.Addr]; ok {
+		p.TotalChunks += int64(len(chunks))
+		p.StoredBytes += int64(len(bodyBytes))
+	}
+	ds.phonesMu.Unlock()
 
 	// Register file manifest in desktop store
 	fileRec := storage.FileRecord{
@@ -693,6 +728,19 @@ func (ds *DesktopServer) handleFileDownload(w http.ResponseWriter, r *http.Reque
 	}
 
 	cleanFilename := filepath.Base(rec.Filename)
+
+	// Verify accessibility of initial chunk before committing HTTP headers
+	var firstChunk []byte
+	if len(rec.ChunkHashes) > 0 {
+		var err error
+		firstChunk, err = ds.fetchChunkFromFleet(rec, rec.ChunkHashes[0])
+		if err != nil {
+			log.Printf("[DOWNLOAD] Error fetching initial chunk %s for file %s: %v", rec.ChunkHashes[0], rec.Filename, err)
+			http.Error(w, fmt.Sprintf("File %q cannot be downloaded: the phone storing this file is currently offline.", rec.Filename), http.StatusServiceUnavailable)
+			return
+		}
+	}
+
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, cleanFilename))
 	if rec.ContentType != "" {
 		w.Header().Set("Content-Type", rec.ContentType)
@@ -701,8 +749,14 @@ func (ds *DesktopServer) handleFileDownload(w http.ResponseWriter, r *http.Reque
 	}
 	w.Header().Set("Content-Length", strconv.FormatInt(rec.Size, 10))
 
-	// Reassemble chunks by streaming from designated host phones over LAN
-	for _, chunkHash := range rec.ChunkHashes {
+	if len(firstChunk) > 0 {
+		if _, err := w.Write(firstChunk); err != nil {
+			return
+		}
+	}
+
+	// Stream remaining chunks from the storage phone over LAN
+	for _, chunkHash := range rec.ChunkHashes[1:] {
 		data, err := ds.fetchChunkFromFleet(rec, chunkHash)
 		if err != nil {
 			log.Printf("[DOWNLOAD] Error fetching chunk %s: %v", chunkHash, err)

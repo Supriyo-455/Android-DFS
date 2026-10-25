@@ -339,60 +339,25 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// Perform FastCDC Content-Defined Chunking
 	chunks := s.fastcdc.ChunkBuffer(bodyBytes)
 
-	// Identify active cluster peers for load balancing
-	var activePeers []gossip.PeerNode
-	for _, p := range s.routingTable.GetPeers() {
-		if p.HTTPAddr != "" && p.Status == gossip.StatusActive {
-			activePeers = append(activePeers, p)
-		}
-	}
-
-	numNodes := 1 + len(activePeers)
+	// Store ALL chunks together on the local node CAS store so this file is never fragmented across phones.
+	// When this phone is online, the entire file can be retrieved even if other phones are absent.
 	var newChunksCount int
 	var dedupChunksCount int
 	chunkSummaries := make([]map[string]interface{}, 0, len(chunks))
 	chunkHashes := make([]string, 0, len(chunks))
 	chunkHosts := make(map[string]string)
 
-	for i, chunk := range chunks {
+	for _, chunk := range chunks {
 		chunkHashes = append(chunkHashes, chunk.Hash)
-		targetIdx := i % numNodes
 
-		var isNew bool
-		var targetNodeName string
-
-		if targetIdx == 0 {
-			// Store on local node
-			var err error
-			isNew, err = s.cas.Put(chunk.Hash, chunk.Data)
-			if err != nil {
-				log.Printf("[CAS] Error storing local chunk %s: %v", chunk.Hash, err)
-				continue
-			}
-			s.f2fs.RecordWrite(len(chunk.Data))
-			chunkHosts[chunk.Hash] = "local"
-			targetNodeName = s.cfg.NodeName
-		} else {
-			// Balance load: Store on remote peer phone
-			peer := activePeers[targetIdx-1]
-			var err error
-			isNew, err = s.storeChunkOnPeer(peer.HTTPAddr, chunk.Hash, chunk.Data)
-			if err != nil {
-				// Fallback to storing locally if remote peer network transfer encounters an error
-				log.Printf("[DISTRIBUTED] Peer %s write failed for chunk %s (%v), storing locally", peer.Name, chunk.Hash, err)
-				isNew, err = s.cas.Put(chunk.Hash, chunk.Data)
-				if err != nil {
-					log.Printf("[CAS] Fallback local store failed for chunk %s: %v", chunk.Hash, err)
-					continue
-				}
-				s.f2fs.RecordWrite(len(chunk.Data))
-				chunkHosts[chunk.Hash] = "local"
-				targetNodeName = s.cfg.NodeName
-			} else {
-				chunkHosts[chunk.Hash] = peer.HTTPAddr
-				targetNodeName = peer.Name
-			}
+		isNew, err := s.cas.Put(chunk.Hash, chunk.Data)
+		if err != nil {
+			log.Printf("[CAS] Error storing local chunk %s: %v", chunk.Hash, err)
+			continue
 		}
+		s.f2fs.RecordWrite(len(chunk.Data))
+		chunkHosts[chunk.Hash] = "local"
+		targetNodeName := s.cfg.NodeName
 
 		if isNew {
 			newChunksCount++
