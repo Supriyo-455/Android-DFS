@@ -28,14 +28,12 @@ var (
 )
 
 // StartMetricsCollector launches the background hardware polling loop.
-// It gathers Storage, RAM, CPU, and Battery every 3 seconds so that
-// GetSystemMetrics returns instantly from memory in 0.001ms without ever blocking HTTP requests!
+// It gathers Storage, RAM, CPU, and Battery every 3 seconds in a separate goroutine
+// so that node initialization and HTTP servers are NEVER blocked.
 func StartMetricsCollector(storagePath string) {
 	collectorOnce.Do(func() {
-		// Immediate initial collection so metrics are available from the first millisecond
-		updateMetrics(storagePath)
-
 		go func() {
+			updateMetrics(storagePath)
 			ticker := time.NewTicker(3 * time.Second)
 			defer ticker.Stop()
 			for range ticker.C {
@@ -183,13 +181,19 @@ func probeBatteryMetrics() (int, string) {
 		}
 	}
 
-	// Method 3: Termux API (termux-battery-status)
+	// Method 3: Termux API (termux-battery-status) - only if binary is actually installed
 	termuxBins := []string{
 		"/data/data/com.termux/files/usr/bin/termux-battery-status",
 		"termux-battery-status",
 	}
 	for _, bin := range termuxBins {
-		ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+		// Verify binary exists before attempting execution to avoid phantom process overhead
+		if strings.HasPrefix(bin, "/") {
+			if _, err := os.Stat(bin); err != nil {
+				continue
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		out, err := exec.CommandContext(ctx, bin).Output()
 		cancel()
 		if err == nil && len(out) > 0 {
@@ -207,61 +211,13 @@ func probeBatteryMetrics() (int, string) {
 		}
 	}
 
-	// Method 4: Android cmd battery get level (/system/bin/cmd)
-	cmdCtx, cmdCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	out, err := exec.CommandContext(cmdCtx, "/system/bin/cmd", "battery", "get", "level").Output()
-	cmdCancel()
-	if err == nil {
-		if val, err := strconv.Atoi(strings.TrimSpace(string(out))); err == nil && val > 0 && val <= 100 {
-			return val, "Discharging"
-		}
-	}
-
-	// Method 5: dumpsys battery (/system/bin/dumpsys)
-	dumpCtx, dumpCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	dumpOut, dumpErr := exec.CommandContext(dumpCtx, "/system/bin/dumpsys", "battery").Output()
-	dumpCancel()
-	if dumpErr == nil && len(dumpOut) > 0 {
-		var level int
-		var status string
-		for _, line := range strings.Split(string(dumpOut), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "level:") {
-				parts := strings.Fields(line)
-				if len(parts) >= 2 {
-					if l, err := strconv.Atoi(parts[1]); err == nil && l > 0 && l <= 100 {
-						level = l
-					}
-				}
-			}
-			if strings.HasPrefix(line, "status:") {
-				parts := strings.Fields(line)
-				if len(parts) >= 2 {
-					switch parts[1] {
-					case "2":
-						status = "Charging"
-					case "3":
-						status = "Discharging"
-					case "4":
-						status = "Not charging"
-					case "5":
-						status = "Full"
-					}
-				}
-			}
-		}
-		if level > 0 {
-			if status == "" {
-				status = "Discharging"
-			}
-			return level, status
-		}
-	}
-
-	// Method 6: Android system properties (getprop)
+	// Method 4: Android system properties (getprop) with strict 100ms timeout
 	propBins := []string{"sys.battery.level", "ro.boot.battery_level"}
 	for _, prop := range propBins {
-		if propOut, err := exec.Command("getprop", prop).Output(); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		propOut, err := exec.CommandContext(ctx, "getprop", prop).Output()
+		cancel()
+		if err == nil {
 			if pVal, err := strconv.Atoi(strings.TrimSpace(string(propOut))); err == nil && pVal > 0 && pVal <= 100 {
 				return pVal, "Active"
 			}

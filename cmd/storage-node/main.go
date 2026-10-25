@@ -109,10 +109,12 @@ func main() {
 	}
 	localIP := getLocalIP(overrideIP)
 	localAddr := fmt.Sprintf("%s:%s", localIP, portStr)
+	log.Printf("[INIT] Local IP detected: %s | Advertising node at %s", localIP, localAddr)
 
 	gossipEngine := gossip.NewGossipEngine(cfg.NodeID, routingTable, casStore, cfg.GossipInterval, eventChannel)
 	gossipEngine.SetLocalDetails(cfg.NodeName, localAddr)
 	gossipEngine.Start()
+	log.Printf("[GOSSIP] Cluster engine online on %s", localAddr)
 
 	// If seed peers were provided, connect to them
 	if seedPeers != "" {
@@ -297,8 +299,11 @@ func getLocalIP(override string) string {
 		}
 	}
 
-	// Technique 2: "ip route get" shell command in Termux
-	if out, err := exec.Command("ip", "route", "get", "1.1.1.1").Output(); err == nil {
+	// Technique 2: "ip route get" shell command in Termux (with strict 200ms timeout)
+	ipCtx, ipCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	out, err := exec.CommandContext(ipCtx, "ip", "route", "get", "1.1.1.1").Output()
+	ipCancel()
+	if err == nil {
 		fields := strings.Fields(string(out))
 		for i, f := range fields {
 			if f == "src" && i+1 < len(fields) {
@@ -310,9 +315,12 @@ func getLocalIP(override string) string {
 		}
 	}
 
-	// Technique 3: Android DHCP properties via getprop
-	if out, err := exec.Command("getprop", "dhcp.wlan0.ipaddress").Output(); err == nil {
-		candidate := strings.TrimSpace(string(out))
+	// Technique 3: Android DHCP properties via getprop (with strict 200ms timeout)
+	propCtx, propCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	propOut, propErr := exec.CommandContext(propCtx, "getprop", "dhcp.wlan0.ipaddress").Output()
+	propCancel()
+	if propErr == nil {
+		candidate := strings.TrimSpace(string(propOut))
 		if ip := net.ParseIP(candidate); ip != nil && !ip.IsLoopback() && ip.To4() != nil {
 			return candidate
 		}
