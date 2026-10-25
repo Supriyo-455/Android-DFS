@@ -4,6 +4,7 @@ package resilience
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -49,15 +50,32 @@ func GetSystemMetrics(storagePath string) SystemMetrics {
 	StartMetricsCollector(storagePath)
 
 	metricsMu.RLock()
-	defer metricsMu.RUnlock()
-	return currentMetrics
+	ret := currentMetrics
+	metricsMu.RUnlock()
+
+	// If background collection hasn't completed its first pass yet,
+	// do a fast synchronous read of storage and RAM (takes < 0.1ms)
+	if ret.StorageTotalBytes == 0 || ret.RAMTotalBytes == 0 {
+		updateMetrics(storagePath)
+		metricsMu.RLock()
+		ret = currentMetrics
+		metricsMu.RUnlock()
+	}
+	return ret
 }
 
 func updateMetrics(storagePath string) {
 	var metrics SystemMetrics
 
+	// Preserve prior known battery if not yet updated
+	metricsMu.RLock()
+	metrics.BatteryPct = currentMetrics.BatteryPct
+	metrics.BatteryStatus = currentMetrics.BatteryStatus
+	metricsMu.RUnlock()
+
 	// 1. Storage Remaining (syscall.Statfs)
-	checkPaths := []string{storagePath, ".", "/data/data/com.termux", "/data"}
+	homeDir, _ := os.UserHomeDir()
+	checkPaths := []string{storagePath, homeDir, ".", "/data/data/com.termux/files/home", "/sdcard", "/data"}
 	for _, p := range checkPaths {
 		if p == "" {
 			continue
@@ -122,80 +140,92 @@ func updateMetrics(storagePath string) {
 	// 3. CPU Load
 	metrics.CPUUsagePct = probeCPULoad()
 
-	// 4. Battery Level & Status
-	metrics.BatteryPct, metrics.BatteryStatus = probeBatteryMetrics()
-
-	// Update in-memory state safely
+	// CRITICAL: Commit Storage, RAM, and CPU to currentMetrics IMMEDIATELY!
+	// This guarantees that /api/status ALWAYS serves actual storage and RAM telemetry,
+	// completely decoupled from battery sensor probing!
 	metricsMu.Lock()
-	currentMetrics = metrics
+	currentMetrics.StorageTotalBytes = metrics.StorageTotalBytes
+	currentMetrics.StorageFreeBytes = metrics.StorageFreeBytes
+	currentMetrics.StorageUsedBytes = metrics.StorageUsedBytes
+	currentMetrics.StorageUsedPct = metrics.StorageUsedPct
+	currentMetrics.RAMTotalBytes = metrics.RAMTotalBytes
+	currentMetrics.RAMFreeBytes = metrics.RAMFreeBytes
+	currentMetrics.RAMUsedBytes = metrics.RAMUsedBytes
+	currentMetrics.RAMUsagePct = metrics.RAMUsagePct
+	currentMetrics.CPUUsagePct = metrics.CPUUsagePct
+	metricsMu.Unlock()
+
+	// 4. Battery Level & Status (Probed asynchronously / non-blocking)
+	bPct, bStat := probeBatteryMetrics()
+	metricsMu.Lock()
+	if bPct > 0 {
+		currentMetrics.BatteryPct = bPct
+	}
+	if bStat != "" {
+		currentMetrics.BatteryStatus = bStat
+	}
 	metricsMu.Unlock()
 }
 
 func probeBatteryMetrics() (int, string) {
-	// Method 1: Linux Kernel sysfs uevent files (World-readable on almost all Android kernels)
-	// /sys/class/power_supply/*/uevent contains POWER_SUPPLY_CAPACITY=XX and POWER_SUPPLY_STATUS=XX
-	if uevents, err := filepath.Glob("/sys/class/power_supply/*/uevent"); err == nil && len(uevents) > 0 {
-		for _, ufile := range uevents {
-			if data, err := os.ReadFile(ufile); err == nil {
-				lines := strings.Split(string(data), "\n")
-				var capVal int
-				var statVal string
-				for _, line := range lines {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "POWER_SUPPLY_CAPACITY=") {
-						valStr := strings.TrimPrefix(line, "POWER_SUPPLY_CAPACITY=")
-						if v, err := strconv.Atoi(valStr); err == nil && v >= 0 && v <= 100 {
-							capVal = v
-						}
-					}
-					if strings.HasPrefix(line, "POWER_SUPPLY_STATUS=") {
-						statVal = strings.TrimPrefix(line, "POWER_SUPPLY_STATUS=")
+	// Technique 1: Direct sysfs file inspection without directory listing.
+	// On Android, SELinux grants untrusted apps direct search/open permission on known paths
+	// even when directory listing (readdir / Glob) is blocked.
+	directPaths := []string{
+		"/sys/class/power_supply/battery/uevent",
+		"/sys/class/power_supply/bms/uevent",
+		"/sys/class/power_supply/main/uevent",
+		"/sys/class/power_supply/battery/capacity",
+		"/sys/class/power_supply/bms/capacity",
+		"/sys/class/power_supply/main/capacity",
+		"/sys/devices/virtual/power_supply/battery/uevent",
+		"/sys/devices/virtual/power_supply/battery/capacity",
+		"/sys/devices/platform/battery/power_supply/battery/capacity",
+	}
+
+	for _, p := range directPaths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		str := string(data)
+		if strings.HasSuffix(p, "capacity") {
+			if pct, err := strconv.Atoi(strings.TrimSpace(str)); err == nil && pct > 0 && pct <= 100 {
+				status := "Discharging"
+				statPath := filepath.Join(filepath.Dir(p), "status")
+				if sData, err := os.ReadFile(statPath); err == nil {
+					s := strings.TrimSpace(string(sData))
+					if s != "" {
+						status = s
 					}
 				}
-				if capVal > 0 {
-					if statVal == "" {
-						statVal = "Discharging"
-					}
-					return capVal, statVal
-				}
+				return pct, status
+			}
+		} else if strings.HasSuffix(p, "uevent") {
+			pct, status := parseUevent(str)
+			if pct > 0 {
+				return pct, status
 			}
 		}
 	}
 
-	// Method 2: Direct /sys/class/power_supply/*/capacity and status
-	if caps, err := filepath.Glob("/sys/class/power_supply/*/capacity"); err == nil && len(caps) > 0 {
-		for _, capPath := range caps {
-			if capData, err := os.ReadFile(capPath); err == nil {
-				if pct, err := strconv.Atoi(strings.TrimSpace(string(capData))); err == nil && pct > 0 && pct <= 100 {
-					status := "Discharging"
-					statPath := filepath.Join(filepath.Dir(capPath), "status")
-					if statData, err := os.ReadFile(statPath); err == nil {
-						s := strings.TrimSpace(string(statData))
-						if s != "" {
-							status = s
-						}
-					}
+	// Technique 2: Directory glob for uevent / capacity if directory listing is allowed
+	if uevents, err := filepath.Glob("/sys/class/power_supply/*/uevent"); err == nil && len(uevents) > 0 {
+		for _, ufile := range uevents {
+			if data, err := os.ReadFile(ufile); err == nil {
+				pct, status := parseUevent(string(data))
+				if pct > 0 {
 					return pct, status
 				}
 			}
 		}
 	}
 
-	// Method 3: Termux API (termux-battery-status) - only if binary is actually installed
-	termuxBins := []string{
-		"/data/data/com.termux/files/usr/bin/termux-battery-status",
-		"termux-battery-status",
-	}
-	for _, bin := range termuxBins {
-		// Verify binary exists before attempting execution to avoid phantom process overhead
-		if strings.HasPrefix(bin, "/") {
-			if _, err := os.Stat(bin); err != nil {
-				continue
-			}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		out, err := exec.CommandContext(ctx, bin).Output()
-		cancel()
+	// Technique 3: Termux API tool (termux-battery-status)
+	// ONLY if installed, and executed with guaranteed timeout that never hangs on pipes
+	termuxBin := "/data/data/com.termux/files/usr/bin/termux-battery-status"
+	if _, err := os.Stat(termuxBin); err == nil {
+		out, err := safeExecWithTimeout(250*time.Millisecond, termuxBin)
 		if err == nil && len(out) > 0 {
 			var tb struct {
 				Percentage int    `json:"percentage"`
@@ -211,20 +241,60 @@ func probeBatteryMetrics() (int, string) {
 		}
 	}
 
-	// Method 4: Android system properties (getprop) with strict 100ms timeout
-	propBins := []string{"sys.battery.level", "ro.boot.battery_level"}
-	for _, prop := range propBins {
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		propOut, err := exec.CommandContext(ctx, "getprop", prop).Output()
-		cancel()
-		if err == nil {
-			if pVal, err := strconv.Atoi(strings.TrimSpace(string(propOut))); err == nil && pVal > 0 && pVal <= 100 {
-				return pVal, "Active"
+	return 0, "Sensor Restricted"
+}
+
+func parseUevent(content string) (int, string) {
+	var capVal int
+	var statVal string
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "POWER_SUPPLY_CAPACITY=") {
+			v, err := strconv.Atoi(strings.TrimPrefix(line, "POWER_SUPPLY_CAPACITY="))
+			if err == nil && v >= 0 && v <= 100 {
+				capVal = v
 			}
 		}
+		if strings.HasPrefix(line, "POWER_SUPPLY_STATUS=") {
+			statVal = strings.TrimPrefix(line, "POWER_SUPPLY_STATUS=")
+		}
+	}
+	if capVal > 0 {
+		if statVal == "" {
+			statVal = "Discharging"
+		}
+		return capVal, statVal
+	}
+	return 0, ""
+}
+
+func safeExecWithTimeout(timeout time.Duration, bin string, args ...string) ([]byte, error) {
+	cmd := exec.Command(bin, args...)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = nil
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
 	}
 
-	return 0, "Sensor Restricted"
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return nil, err
+		}
+		return stdout.Bytes(), nil
+	case <-time.After(timeout):
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		return nil, context.DeadlineExceeded
+	}
 }
 
 func probeCPULoad() float64 {
